@@ -1,6 +1,3 @@
-# Async SQLAlchemy engine (asyncpg driver) built from settings.DB_URL, async sessionmaker, 
-# exposes Base = declarative_base() for all models to inherit
-
 """
 app/core/db.py
 

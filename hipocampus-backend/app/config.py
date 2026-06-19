@@ -1,6 +1,3 @@
-# Pydantic Settings class loading env vars (DB_URL, REDIS_URL, JWT_SECRET_KEY, JWT_EXPIRE_MINUTES, QWEN_API_KEY, 
-# QWEN_ENDPOINT, COOKIE_NAME, COOKIE_DOMAIN, CORS_ORIGINS), exposes a cached get_settings() used everywhere via DI
-
 """
 app/config.py
 

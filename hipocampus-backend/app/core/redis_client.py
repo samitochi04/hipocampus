@@ -1,6 +1,3 @@
-# Single shared redis.asyncio connection pool from settings.REDIS_URL, exposes get_redis_client() 
-# used by both the API layer and Celery tasks
-
 """
 app/core/redis_client.py
 
