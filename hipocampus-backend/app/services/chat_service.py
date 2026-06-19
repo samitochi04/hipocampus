@@ -23,7 +23,6 @@ Used by: app/api/v1/chat.py exclusively.
 
 import asyncio
 import logging
-import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
