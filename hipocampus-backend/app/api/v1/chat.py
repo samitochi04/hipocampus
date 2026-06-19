@@ -1,0 +1,2 @@
+# POST /chat (the main turn endpoint — takes {message}, requires get_current_user, delegates to chat_service.process_turn()), 
+# GET /chat/history (returns the Redis working-memory buffer for the current session)

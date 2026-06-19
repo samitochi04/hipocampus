@@ -1,0 +1,1 @@
+# semantic_facts table: fact_text, confidence, source_episode_ids, is_conflicted, embedding

@@ -1,0 +1,10 @@
+.env
+
+doc
+
+.mypy_cache
+
+db
+
+venv
+.venv

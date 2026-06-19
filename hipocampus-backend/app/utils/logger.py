@@ -1,0 +1,1 @@
+# Configures one structured logger shared by the API and Celery workers, so request IDs / user IDs are traceable across logs

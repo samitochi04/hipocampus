@@ -1,0 +1,1 @@
+# Endpoint tests for /register, /login, /logout                

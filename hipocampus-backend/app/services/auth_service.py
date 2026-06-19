@@ -1,0 +1,1 @@
+# create_user_with_key(name) (orchestrates security.generate_login_key + DB insert), authenticate_with_key(login_key) (lookup + hash verification), issue_session_cookie(user) (wraps create_access_token + response.set_cookie)

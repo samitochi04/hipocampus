@@ -1,0 +1,1 @@
+# users table: id (UUID), name, login_key_hash, created_at, last_login_at

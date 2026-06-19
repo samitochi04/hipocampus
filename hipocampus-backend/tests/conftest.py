@@ -1,0 +1,1 @@
+# Pytest fixtures: throwaway-transaction test DB session, fake Redis instance, mocked QwenClient returning canned responses

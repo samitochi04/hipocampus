@@ -1,0 +1,2 @@
+# POST /register (takes {name}, creates user, generates + hashes login key, returns plaintext key once, sets JWT cookie), 
+# POST /login (takes {login_key}, verifies hash, issues new JWT cookie), POST /logout (clears the cookie)

@@ -1,0 +1,1 @@
+# episodes table: raw_prompt, llm_response, importance_score, promoted, embedding vector, created_at

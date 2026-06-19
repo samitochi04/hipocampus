@@ -1,0 +1,2 @@
+# QwenClient wrapper: generate() (chat completion), expand_query() (query expansion), 
+# resolve_conflict() (contradiction arbitration) — all pointed at the Qwen/DashScope endpoint with the API key from settings

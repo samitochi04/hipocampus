@@ -1,0 +1,1 @@
+# RegisterRequest {name}, RegisterResponse {login_key, message}, LoginRequest {login_key}, UserOut {id, name, created_at}
