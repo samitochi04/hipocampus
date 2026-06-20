@@ -21,6 +21,7 @@ Used by: uvicorn (directly), Docker CMD, and tests via TestClient/AsyncClient.
 
 import os
 import logging
+from typing import Literal, cast
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI # type: ignore
@@ -40,7 +41,7 @@ from app.core.exceptions import (
     token_expired_handler,
     token_invalid_handler,
 )
-from app.utils.logger import setup_logging # type: ignore
+from app.utils.logger import setup_logging
 
 settings = get_settings()
 
@@ -48,7 +49,11 @@ settings = get_settings()
 # Logging — must be configured before anything else logs.
 # ---------------------------------------------------------------------------
 
-setup_logging(level=os.getenv("LOG_LEVEL", "INFO"))
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+setup_logging(
+    level=cast(LogLevel, os.getenv("LOG_LEVEL", "INFO"))
+)
 logger = logging.getLogger(__name__)
 
 
@@ -142,12 +147,10 @@ def create_app() -> FastAPI:
     )
 
     # ── CORS ─────────────────────────────────────────────────────────────────
-    # allow_credentials=True is required for the browser to send and receive
-    # httpOnly cookies cross-origin. It MUST be paired with explicit origins —
-    # allow_origins=["*"] is forbidden when credentials=True.
+    cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=cors_origins,
         allow_credentials=True,         # Enables cookie transport
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization"],
@@ -155,9 +158,6 @@ def create_app() -> FastAPI:
     )
 
     # ── Exception handlers ───────────────────────────────────────────────────
-    # Each handler maps one custom exception class to a clean JSON response.
-    # Adding a new exception type means: define it in core/exceptions.py,
-    # write its handler there, and register it here.
     application.add_exception_handler(InvalidLoginKeyError, invalid_login_key_handler)
     application.add_exception_handler(TokenExpiredError, token_expired_handler)
     application.add_exception_handler(TokenInvalidError, token_invalid_handler)

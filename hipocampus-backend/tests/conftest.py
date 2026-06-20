@@ -13,67 +13,103 @@ Three fixture layers:
      tests never make live API calls and are fully deterministic.
   4. HTTP client — an AsyncClient pointed at the test app with all
      dependency overrides wired in.
+
+pytest.ini must contain:
+    [pytest]
+    asyncio_mode = auto
+This replaces the deprecated session-scoped event_loop fixture.
 """
 
-import asyncio
+# ── Environment overrides ──────────────────────────────────────────────────
+# These MUST be set before any app module is imported so that get_settings()
+# caches the correct values when it is first called during the imports below.
+#
+# COOKIE_SECURE=false: httpx won't store or send a Secure cookie over plain
+#   http://test (the base URL used by ASGITransport). Without this, every
+#   register/login response sets a cookie the client silently ignores, and
+#   every subsequent authenticated request returns 401.
+#
+# AUTO_CREATE_TABLES=false: the lifespan startup event is skipped for table
+#   creation; the test_engine fixture handles schema setup instead.
+import os
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
-import pytest # type: ignore
-import pytest_asyncio # type: ignore
-from fakeredis.aioredis import FakeRedis # type: ignore
+import pytest
+import pytest_asyncio
+from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine # type: ignore
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+# ── Cookie patch ───────────────────────────────────────────────────────────
+# Must happen before any app module is imported.
+#
+# httpx follows RFC 6265: cookies with the Secure attribute received over
+# http:// are silently discarded. The test base URL is "http://test"
+# (ASGITransport doesn't use TLS), so any cookie set with secure=True is
+# never stored and subsequent authenticated requests return 401.
+#
+# We patch Starlette's Response.set_cookie at the class level to always
+# force secure=False. This runs before any app import, so every set_cookie
+# call for the entire test session — including the register and login routes
+# — uses secure=False, and httpx stores the cookie correctly.
+from starlette.responses import Response as _StarletteResponse
+
+_orig_set_cookie = _StarletteResponse.set_cookie
+
+
+def _insecure_set_cookie(self, key, value="", **kwargs):
+    """Wrapper that forces secure=False so httpx stores cookies over http://."""
+    kwargs["secure"] = False
+    return _orig_set_cookie(self, key, value, **kwargs)
+
+
+_StarletteResponse.set_cookie = _insecure_set_cookie
+# ──────────────────────────────────────────────────────────────────────────
 
 from app.core.db import Base, get_db
 from app.core.redis_client import get_redis_client
 from app.main import create_app
 
 # ---------------------------------------------------------------------------
-# Event loop — one loop per test session (required for async fixtures).
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """
-    Provides a single asyncio event loop for the entire test session.
-    Using scope="session" avoids the overhead of creating and destroying
-    a loop for every test function.
-
-    Used by: every async fixture and test via pytest-asyncio.
-    """
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-# ---------------------------------------------------------------------------
 # Database fixtures
 # ---------------------------------------------------------------------------
 
-# Use an in-memory-style Postgres URL for tests.
-# Set TEST_DB_URL in your environment or .env.test to override.
-# Defaults to a local test database that should be separate from dev.
-import os
+# Use the same Postgres instance as docker-compose but a separate database.
+# The docker-compose service name resolves to localhost when running tests
+# locally with `docker compose up postgres -d`.
+# Override with: export TEST_DB_URL=postgresql+asyncpg://...
 TEST_DB_URL = os.getenv(
     "TEST_DB_URL",
-    "postgresql+asyncpg://user:pass@localhost:5432/hipocampus_test",
+    "postgresql+asyncpg://hipocampus:hipocampus@localhost:5432/hipocampus_test",
 )
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def test_engine():
     """
-    Creates the async SQLAlchemy engine pointing at the test database and
-    creates all tables before any test runs. Drops all tables after the
-    session ends to leave the test DB clean.
+    Creates an async engine using NullPool for each test function.
 
-    Scope: session — the engine is shared across all tests for performance.
+    NullPool is the key: instead of maintaining a pool of reusable asyncpg
+    connections, every DB call opens a fresh connection and closes it
+    immediately. This means connections are always created on the current
+    test's event loop — there is no pooled connection from a previous loop
+    to cause 'Future attached to a different loop' errors.
+
+    The trade-off is slightly slower tests (no connection reuse), but it is
+    the only approach that works reliably when pytest-asyncio gives each test
+    its own event loop (which is the default in 0.21+).
+
+    Creates the pgvector extension and all tables on setup.
+    Drops all tables on teardown so the next test starts clean.
 
     Used by: db_session fixture.
     """
-    engine = create_async_engine(TEST_DB_URL, echo=False)
+    engine = create_async_engine(TEST_DB_URL, poolclass=NullPool, echo=False)
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
     yield engine
     async with engine.begin() as conn:
@@ -84,27 +120,38 @@ async def test_engine():
 @pytest_asyncio.fixture
 async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     """
-    Yields an async DB session that is rolled back after each test.
-    This means every test sees a clean database without needing to
-    truncate tables between runs.
+    Provides a fresh AsyncSession per test.
 
-    Strategy: open a connection, begin a SAVEPOINT, run the test,
-    roll back to the SAVEPOINT, then close the connection.
+    Deliberately avoids binding the session to a specific connection or
+    manually calling conn.begin() — both patterns cause asyncpg to raise
+    'cannot perform operation: another operation is in progress' because
+    asyncpg does not allow two concurrent operations on the same connection.
+
+    Cleanup strategy: override_get_db (in the client fixture) never calls
+    commit(), so every write the route handlers make is uncommitted at the
+    end of the test. Rolling back here discards those writes, giving each
+    test a clean slate without needing TRUNCATE or SAVEPOINTs.
 
     Parameters:
-        test_engine — injected by pytest from the session-scoped fixture above.
+        test_engine — session-scoped engine from the test_engine fixture.
 
     Yields:
-        AsyncSession — a transactional session isolated from other tests.
+        AsyncSession — independent session with autoflush=False so explicit
+                       flush() calls in service code work as expected.
 
-    Used by: all test files via Depends override in the client fixture.
+    Used by: client fixture (injected into override_get_db).
     """
-    async_session = async_sessionmaker(test_engine, expire_on_commit=False)
-    async with test_engine.connect() as conn:
-        await conn.begin()
-        async with async_session(bind=conn) as session:
-            yield session
-        await conn.rollback()
+    factory = async_sessionmaker(
+        test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,   # Service code calls flush() explicitly; don't double-flush
+        autocommit=False,
+    )
+    async with factory() as session:
+        yield session
+        # Roll back any uncommitted writes so the next test starts clean.
+        await session.rollback()
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +250,15 @@ async def client(db_session, fake_redis) -> AsyncGenerator[AsyncClient, None]:
     """
     app = create_app()
 
-    # Override get_db() to use the test session (with rollback isolation).
+    # Override get_db() to use the test session.
+    # Deliberately does NOT commit — all writes stay uncommitted so the
+    # db_session fixture can roll them back after the test ends.
     async def override_get_db():
-        yield db_session
+        try:
+            yield db_session
+        except Exception:
+            await db_session.rollback()
+            raise
 
     # Override get_redis_client() to use FakeRedis.
     def override_get_redis():
@@ -215,7 +268,7 @@ async def client(db_session, fake_redis) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[get_redis_client] = override_get_redis
 
     async with AsyncClient(
-        transport=ASGITransport(app=app),
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
         base_url="http://test",
         follow_redirects=True,
     ) as ac:

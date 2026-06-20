@@ -143,9 +143,9 @@ async def test_chat_conflict_returns_409(client, mock_qwen, db_session):
     If the user message contradicts a high-confidence stored fact using
     override language, the endpoint must return 409 with type=memory_conflict.
     """
-    from sqlalchemy import text
+    from sqlalchemy import text # type: ignore
     from app.models.user import User
-    from sqlalchemy import select
+    from sqlalchemy import select # type: ignore
 
     reg = await _register_and_login(client, "Karl")
     user_id = reg["user_id"]

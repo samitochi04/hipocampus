@@ -28,7 +28,11 @@ from celery.schedules import crontab # type: ignore
 
 from app.config import get_settings
 
+import re
+
 settings = get_settings()
+
+_celery_redis_url = re.sub(r"/\d+$", "", settings.REDIS_URL) + "/1"
 
 # ---------------------------------------------------------------------------
 # Application instance
@@ -36,17 +40,8 @@ settings = get_settings()
 
 celery_app = Celery(
     "hipocampus",
-    # Broker: where Celery workers listen for new tasks.
-    # Using Redis DB index 1 to avoid colliding with session buffers (index 0).
-    broker=settings.REDIS_URL.rstrip("/") + "/1"
-    if not settings.REDIS_URL.endswith("/1")
-    else settings.REDIS_URL,
-    # Result backend: where task return values and states are stored.
-    # Same DB index as the broker — results are short-lived anyway.
-    backend=settings.REDIS_URL.rstrip("/") + "/1"
-    if not settings.REDIS_URL.endswith("/1")
-    else settings.REDIS_URL,
-    # Tell Celery where to find the task functions.
+    broker=_celery_redis_url,
+    backend=_celery_redis_url,
     include=["app.tasks.scheduled_tasks"],
 )
 
@@ -55,25 +50,16 @@ celery_app = Celery(
 # ---------------------------------------------------------------------------
 
 celery_app.conf.update(
-    # JSON is safer than the default pickle — no arbitrary code execution risk.
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-    # All datetimes in UTC to match the rest of the application.
     timezone="UTC",
     enable_utc=True,
-    # Prevent a hung task from blocking a worker forever.
-    # Consolidation tasks are given 10 minutes; decay tasks 5 minutes.
     task_soft_time_limit=600,   # SIGTERM sent after 10 min
     task_time_limit=660,         # SIGKILL sent after 11 min (hard ceiling)
-    # Retry configuration for transient failures (e.g. Qwen rate limits).
     task_max_retries=3,
     task_default_retry_delay=60,  # Wait 60 seconds between retries
-    # Keep task results for 1 hour — long enough to inspect after a run
-    # but short enough not to bloat Redis.
     result_expires=3600,
-    # Workers ack tasks only after completion, not on receipt.
-    # This means a worker crash reruns the task rather than silently dropping it.
     task_acks_late=True,
     worker_prefetch_multiplier=1,  # One task at a time per worker — memory tasks are heavy
 )

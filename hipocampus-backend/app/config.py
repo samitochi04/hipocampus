@@ -41,11 +41,11 @@ class Settings(BaseSettings):
     QWEN_ENDPOINT: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
     # --- CORS ---------------------------------------------------------
-    CORS_ORIGINS: list[str] = ["http://localhost:5173"]  # Must list the exact client origin(s) for cookies to work cross-site
+    CORS_ORIGINS: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-# Cache Settings for faster retrieval without using any thread.
+
 @lru_cache
 def get_settings() -> Settings:
     """
