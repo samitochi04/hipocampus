@@ -22,7 +22,7 @@ Columns:
     decay_weight     — starts at 1.0, multiplied by 0.96 on each daily decay pass
     conflict_metadata — JSONB blob storing override details when this episode
                         triggered a contradiction (nullable)
-    embedding        — 1536-dim pgvector column for cosine similarity search
+    embedding        — 1024-dim pgvector column for cosine similarity search
     created_at       — set once on insert (TimestampMixin)
     updated_at       — refreshed on update (TimestampMixin)
 
@@ -36,9 +36,9 @@ Used by:
 import uuid
 
 from pgvector.sqlalchemy import Vector # type: ignore
-from sqlalchemy import Boolean, Float, String, Text # type: ignore
-from sqlalchemy.dialects.postgresql import JSONB, UUID # type: ignore
-from sqlalchemy.orm import Mapped, mapped_column # type: ignore
+from sqlalchemy import Boolean, Float, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
 from app.models.base import TimestampMixin, UUIDMixin
@@ -110,7 +110,7 @@ class Episode(UUIDMixin, TimestampMixin, Base):
     )
 
     embedding: Mapped[list | None] = mapped_column(
-        Vector(1536),
+        Vector(1024),
         nullable=True,
         # Null on insert; populated asynchronously after the turn completes
         # to avoid blocking the response. The sleep consolidator skips rows

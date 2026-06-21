@@ -11,12 +11,14 @@ This module is imported by:
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import ( # type: ignore
+from sqlalchemy import text
+
+from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase # type: ignore
+from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
 
@@ -39,7 +41,7 @@ engine = create_async_engine(
     # handing it to a request. Adds a tiny round-trip but prevents
     # "connection was closed" errors after a DB restart.
     pool_pre_ping=True,
-    echo=True,  # Set True locally to log every SQL statement
+    echo=False,  # Set True locally to log every SQL statement
 )
 
 # ---------------------------------------------------------------------------
@@ -98,14 +100,22 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def create_all_tables() -> None:
     """
-    Creates every table registered on Base.metadata if it does not already
-    exist. Called once in main.py's startup event during local development.
-    In production, Alembic migrations are used instead — this function is
-    a convenience shortcut only.
+    Installs the pgvector extension and creates every table registered on
+    Base.metadata. Called once on startup during local development.
+
+    Two-step sequence (order is mandatory):
+      1. CREATE EXTENSION IF NOT EXISTS vector — registers the `vector` type.
+         Without this, any CREATE TABLE with a Vector(...) column fails with
+         'type "vector" does not exist'.
+      2. Base.metadata.create_all — issues CREATE TABLE for missing tables.
+
+    Both steps run in the same transaction. The extension call is idempotent.
     Takes no parameters.
     Used by: app/main.py startup event (dev mode only).
     """
     async with engine.begin() as conn:
+        # Must run before create_all — registers the vector type in this DB.
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
 
 

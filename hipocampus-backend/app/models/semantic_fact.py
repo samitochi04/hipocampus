@@ -27,7 +27,7 @@ Columns:
     source_episode_ids — UUIDs of the episodes this fact was derived from
     is_conflicted     — True when a newer episode contradicts this fact and
                         the conflict hasn't been resolved yet
-    embedding         — 1536-dim vector for cosine similarity retrieval
+    embedding         — 1024-dim vector for cosine similarity retrieval
     created_at        — TimestampMixin
     updated_at        — TimestampMixin (refreshed on every consolidator update)
 
@@ -41,9 +41,9 @@ Used by:
 import uuid
 
 from pgvector.sqlalchemy import Vector # type: ignore
-from sqlalchemy import Boolean, Float, String, Text # type: ignore
-from sqlalchemy.dialects.postgresql import ARRAY, UUID # type: ignore
-from sqlalchemy.orm import Mapped, mapped_column # type: ignore
+from sqlalchemy import Boolean, Float, String, Text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
 from app.models.base import TimestampMixin, UUIDMixin
@@ -102,7 +102,7 @@ class SemanticFact(UUIDMixin, TimestampMixin, Base):
     )
 
     embedding: Mapped[list | None] = mapped_column(
-        Vector(1536),
+        Vector(1024),
         nullable=True,
         # Populated by the consolidator after fact_text is written.
         # Used for cosine similarity search in tier_retrieval.py.

@@ -2,19 +2,21 @@
  * src/api/client.js
  *
  * Centralized HTTP client used by every api/* module.
- * All fetch calls in the app go through `apiRequest()` rather than calling
- * fetch() directly, so error handling, base URL, and cookie forwarding are
- * never duplicated.
  *
- * Key decisions:
- *   - credentials: "include" — sends the httpOnly session cookie on every
- *     request so the backend can authenticate the caller. Without this flag
- *     the browser strips the cookie and every protected route returns 401.
- *   - Base URL — reads VITE_API_BASE_URL from the environment at build time.
- *     In development this is "" (empty) so Vite's proxy handles routing.
- *     In production it is set to the backend's public URL.
- *   - Error shape — all errors are normalized to { status, message } so
- *     callers never have to inspect raw Response objects.
+ * Auth strategy:
+ *   The backend returns a signed JWT in the response body on every login and
+ *   register call. This module stores that token in memory and attaches it as
+ *   an Authorization: Bearer header on every subsequent request. This bypasses
+ *   browser cookie restrictions (Secure attribute on HTTP, SameSite, nginx
+ *   proxy cookie stripping) that caused 401s after successful logins.
+ *
+ *   The httpOnly cookie is still set by the backend as a backup layer, but
+ *   the Bearer header is the primary auth mechanism in this client.
+ *
+ * Token lifecycle:
+ *   setAuthToken(token)  — called by auth.js after register/login
+ *   clearAuthToken()     — called by auth.js after logout
+ *   getAuthToken()       — read by apiRequest() to build the Authorization header
  *
  * Used by: src/api/auth.js, src/api/chat.js, src/api/memory.js
  */
@@ -23,21 +25,78 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 // ---------------------------------------------------------------------------
+// In-memory token store
+// ---------------------------------------------------------------------------
+
+/**
+ * _token
+ * Module-level variable holding the current JWT.
+ * Survives React re-renders. Cleared on logout or page refresh.
+ * Page-refresh persistence is handled by sessionStorage below.
+ */
+let _token = null;
+
+/** Session storage key for persisting the token across page refreshes. */
+const SESSION_KEY = "hipocampus_token";
+
+/**
+ * setAuthToken
+ * Stores the JWT in both the module variable and sessionStorage so the
+ * token survives page refreshes within the same browser tab.
+ *
+ * Parameters:
+ *   token (string) — signed JWT returned by the backend on login/register.
+ *
+ * Returns: void.
+ * Used by: src/api/auth.js → register(), login().
+ */
+export function setAuthToken(token) {
+  _token = token;
+  try { sessionStorage.setItem(SESSION_KEY, token); } catch { /* storage blocked */ }
+}
+
+/**
+ * clearAuthToken
+ * Removes the JWT from memory and sessionStorage.
+ *
+ * Parameters: none.
+ * Returns: void.
+ * Used by: src/api/auth.js → logout().
+ */
+export function clearAuthToken() {
+  _token = null;
+  try { sessionStorage.removeItem(SESSION_KEY); } catch { /* storage blocked */ }
+}
+
+/**
+ * getAuthToken
+ * Returns the current JWT, falling back to sessionStorage on a fresh page load.
+ *
+ * Parameters: none.
+ * Returns: string | null.
+ * Used by: apiRequest() below.
+ */
+function getAuthToken() {
+  if (!_token) {
+    try { _token = sessionStorage.getItem(SESSION_KEY); } catch { /* storage blocked */ }
+  }
+  return _token;
+}
+
+// ---------------------------------------------------------------------------
 // Error class
 // ---------------------------------------------------------------------------
 
 /**
+ * ApiError
  * Typed error thrown by apiRequest() for any non-2xx response.
- * Callers can catch this and check .status to branch on 401, 409, etc.
+ * Callers can check .status to branch on 401, 409, etc.
  *
- * Parameters (set by apiRequest, not by callers):
- *   message (string) — human-readable error detail from the server, or a
- *                       fallback string if the response had no body.
- *   status  (number) — HTTP status code of the failed response.
+ * Parameters:
+ *   message (string) — human-readable error detail from the server.
+ *   status  (number) — HTTP status code.
  *
- * Used by: catch blocks in auth.js, chat.js, memory.js, and React components
- *          that need to handle specific error codes (e.g. 401 → redirect to
- *          login, 409 → show conflict UI).
+ * Used by: catch blocks in auth.js, chat.js, memory.js, and React components.
  */
 export class ApiError extends Error {
   constructor(message, status) {
@@ -52,54 +111,51 @@ export class ApiError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
+ * apiRequest
  * Makes an authenticated JSON request to the backend API.
- * Handles serialisation, deserialisation, and error normalisation.
+ *
+ * Auth headers (both sent so either path in the backend works):
+ *   Authorization: Bearer <token>  — primary; read first by get_current_user()
+ *   Cookie: hipocampus_session     — backup; forwarded automatically by browser
  *
  * Parameters:
- *   path    (string)  — API path relative to the base URL, e.g. "/api/v1/auth/register".
- *                       Must start with "/".
- *   options (object)  — standard fetch RequestInit options. The caller sets
- *                       `method`, `body` (as a plain object — this function
- *                       JSON.stringifies it), and any extra headers.
- *                       `credentials` and `Content-Type` are set automatically
- *                       and must not be overridden by the caller.
+ *   path    (string) — API path, e.g. "/api/v1/auth/register".
+ *   options (object) — standard fetch RequestInit. `body` is plain object
+ *                      (JSON-serialized here). `credentials` and auth headers
+ *                      are set automatically.
  *
- * Returns:
- *   Promise<any> — the parsed JSON response body on success (2xx).
- *                  Returns undefined for 204 No Content responses.
+ * Returns: Promise<any> — parsed JSON on success; undefined for 204.
+ * Throws:  ApiError on non-2xx.
  *
- * Throws:
- *   ApiError — for any non-2xx response, with `.status` set to the HTTP code
- *              and `.message` set to the server's `detail` field (FastAPI's
- *              standard error shape) or a generic fallback.
- *
- * Used by: every function in auth.js, chat.js, and memory.js.
+ * Used by: every function in auth.js, chat.js, memory.js.
  */
 export async function apiRequest(path, options = {}) {
   const { body, headers: extraHeaders, ...restOptions } = options;
 
+  const token = getAuthToken();
+
   const headers = {
     "Content-Type": "application/json",
+    // Include Bearer token when available. The backend's get_current_user()
+    // dependency checks this header first, then falls back to the cookie.
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extraHeaders,
   };
 
   const response = await fetch(`${BASE_URL}${path}`, {
     ...restOptions,
     headers,
-    // Send the httpOnly session cookie on every request.
-    // Required for the backend to authenticate the caller.
+    // Still send the cookie too (backup path, works in environments where
+    // the cookie isn't blocked).
     credentials: "include",
-    // Serialize the body if the caller passed a plain object.
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
-  // 204 No Content — return undefined (no body to parse).
+  // 204 No Content — nothing to parse.
   if (response.status === 204) {
     return undefined;
   }
 
-  // Try to parse the response body as JSON.
-  // Some error responses (e.g. 502 from a proxy) might not be JSON.
   let data;
   try {
     data = await response.json();
@@ -108,7 +164,6 @@ export async function apiRequest(path, options = {}) {
   }
 
   if (!response.ok) {
-    // FastAPI returns errors as { detail: "..." } or { detail: [...] }
     const message =
       typeof data?.detail === "string"
         ? data.detail
@@ -126,52 +181,17 @@ export async function apiRequest(path, options = {}) {
 // Convenience wrappers
 // ---------------------------------------------------------------------------
 
-/**
- * GET request.
- *
- * Parameters:
- *   path (string) — API path, e.g. "/api/v1/auth/me".
- *
- * Returns: Promise<any> — parsed JSON response body.
- * Throws:  ApiError on non-2xx.
- *
- * Used by: auth.js → me(), chat.js → getHistory(), memory.js → getConflicts(),
- *          memory.js → exportMemory().
- */
+/** GET request. */
 export function get(path) {
   return apiRequest(path, { method: "GET" });
 }
 
-/**
- * POST request with a JSON body.
- *
- * Parameters:
- *   path (string) — API path, e.g. "/api/v1/auth/login".
- *   body (object) — plain JS object to JSON-serialize as the request body.
- *
- * Returns: Promise<any> — parsed JSON response body.
- * Throws:  ApiError on non-2xx.
- *
- * Used by: auth.js → register(), login(), logout(),
- *          chat.js → sendMessage().
- */
+/** POST request with a JSON body. */
 export function post(path, body) {
   return apiRequest(path, { method: "POST", body });
 }
 
-/**
- * PATCH request with a JSON body.
- *
- * Parameters:
- *   path (string) — API path including the resource ID,
- *                   e.g. "/api/v1/memory/facts/abc-123".
- *   body (object) — partial update payload to JSON-serialize.
- *
- * Returns: Promise<any> — parsed JSON response body.
- * Throws:  ApiError on non-2xx.
- *
- * Used by: memory.js → updateFact().
- */
+/** PATCH request with a JSON body. */
 export function patch(path, body) {
   return apiRequest(path, { method: "PATCH", body });
 }

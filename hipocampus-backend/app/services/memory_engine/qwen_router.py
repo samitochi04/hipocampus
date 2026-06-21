@@ -348,7 +348,7 @@ async def resolve_conflict(existing_fact: str, new_fact: str) -> dict:
 
 async def embed_text(text: str) -> list[float]:
     """
-    Generates a 1536-dimensional embedding vector for a given text string
+    Generates a 1O24-dimensional embedding vector for a given text string
     using the text-embedding-v3 model on DashScope.
     Used to populate the embedding columns in all three memory tables and
     to compute the query vector for pgvector similarity searches.
@@ -359,8 +359,8 @@ async def embed_text(text: str) -> list[float]:
                      For queries, it's the expanded query string.
 
     Returns:
-        list[float] — 1536-element float list compatible with pgvector's
-                      VECTOR(1536) column type.
+        list[float] — 1024-element float list compatible with pgvector's
+                      VECTOR(1024) column type.
 
     Raises:
         QwenAPIError — on network/API failure or unexpected response shape.
@@ -378,7 +378,7 @@ async def embed_text(text: str) -> list[float]:
     payload = {
         "model": "text-embedding-v3",
         "input": text,
-        "dimension": 1536,
+        "dimension": 1024,
     }
 
     try:

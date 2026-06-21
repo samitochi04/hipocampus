@@ -1,31 +1,26 @@
 """
 app/api/v1/auth.py
 
-Authentication route handlers. Every handler is intentionally thin:
-it validates the request body (Pydantic does this automatically),
-delegates to auth_service, and formats the response.
-No crypto, no DB queries, no business logic lives here.
+Authentication route handlers — thin wrappers over auth_service.
+
+Change: register and login now return `access_token` in the response body
+in addition to setting the httpOnly cookie. The React client stores the
+token in memory and sends it as Authorization: Bearer on every request,
+bypassing browser cookie restrictions over plain HTTP / nginx proxy.
 
 Routes:
-    POST /register  — create account, receive one-time login key
-    POST /login     — submit login key, receive session cookie
-    POST /logout    — clear the session cookie
-    GET  /me        — return the current authenticated user's public info
-
-Used by: app/api/v1/router.py, which mounts this router under /auth.
+    POST /register  — create account, receive one-time login key + token
+    POST /login     — submit login key, receive user profile + token
+    POST /logout    — clear session cookie
+    GET  /me        — return current authenticated user's public info
 """
 
-from fastapi import APIRouter, Depends, Response, status # type: ignore
-from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from fastapi import APIRouter, Depends, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.dependencies import get_current_user
-from app.schemas.auth import (
-    LoginRequest,
-    RegisterRequest,
-    RegisterResponse,
-    UserOut,
-)
+from app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, UserOut
 from app.services.auth_service import (
     authenticate_with_key,
     create_user_with_key,
@@ -37,71 +32,60 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post(
     "/register",
-    response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new account",
-    description=(
-        "Creates a new user with the given display name. "
-        "Returns a login key that is shown exactly once — the client must "
-        "display it with a copy button and require the user to confirm they "
-        "saved it before proceeding. A session cookie is set immediately so "
-        "the user is logged in right after registering."
-    ),
 )
 async def register(
     body: RegisterRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
-) -> RegisterResponse:
+) -> dict:
     """
-    Registration endpoint. Delegates entirely to auth_service.
+    Registration endpoint.
+    Returns the one-time login key, user_id, and a signed JWT access_token.
+    The token lets the client authenticate immediately via Authorization: Bearer
+    without relying on the cookie being stored.
 
     Parameters:
         body     (RegisterRequest) — validated request body containing `name`.
-        response (Response)        — FastAPI injects this so we can set the
-                                     session cookie on the outgoing response.
+        response (Response)        — FastAPI injects this for cookie issuance.
         db       (AsyncSession)    — async DB session from Depends(get_db).
 
     Returns:
-        RegisterResponse — {login_key, user_id, message}
-                           login_key is the plaintext key shown once to the user.
+        dict — {login_key, user_id, message, access_token}
 
-    Side effects:
-        - Inserts one row into the `users` table.
-        - Sets an httpOnly session cookie on the response.
-
-    Used by: React RegisterForm component → api/auth.js → register()
+    Used by: React RegisterForm → api/auth.js → register()
     """
     result = await create_user_with_key(name=body.name, db=db)
 
-    # Log the user in immediately after registration — no second trip needed.
-    # We need a minimal user-like object with an `id` field for issue_session_cookie.
     class _MinimalUser:
         id = result.user_id
 
-    issue_session_cookie(user=_MinimalUser(), response=response)
+    # issue_session_cookie sets the httpOnly cookie AND returns the raw JWT.
+    token = issue_session_cookie(user=_MinimalUser(), response=response)
 
-    return result
+    # Return all RegisterResponse fields plus the token so the client can
+    # store it and use Authorization: Bearer on subsequent requests.
+    return {
+        "login_key": result.login_key,
+        "user_id": result.user_id,
+        "message": result.message,
+        "access_token": token,
+    }
 
 
 @router.post(
     "/login",
-    response_model=UserOut,
     status_code=status.HTTP_200_OK,
     summary="Log in with a login key",
-    description=(
-        "Verifies the submitted login key against the stored Argon2 hash. "
-        "On success, issues a fresh session cookie and returns the user's "
-        "public info. On failure, returns 401 with a generic message."
-    ),
 )
 async def login(
     body: LoginRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
-) -> UserOut:
+) -> dict:
     """
-    Login endpoint. Verifies the key and issues a fresh session cookie.
+    Login endpoint. Returns user profile + access_token in the response body.
 
     Parameters:
         body     (LoginRequest) — validated request body containing `login_key`.
@@ -109,43 +93,32 @@ async def login(
         db       (AsyncSession) — async DB session from Depends(get_db).
 
     Returns:
-        UserOut — {id, name, created_at, last_login_at}
-                  The client can use this to populate the UI without an
-                  extra /me call after login.
+        dict — {id, name, created_at, last_login_at, access_token}
 
-    Side effects:
-        - Updates users.last_login_at for the authenticated user.
-        - Sets a fresh httpOnly session cookie on the response.
-
-    Raises (handled by exception handlers in main.py):
-        InvalidLoginKeyError → 401
-
-    Used by: React LoginForm component → api/auth.js → login()
+    Used by: React LoginForm → api/auth.js → login()
     """
     user = await authenticate_with_key(login_key=body.login_key, db=db)
-    issue_session_cookie(user=user, response=response)
-    return UserOut.model_validate(user)
+    token = issue_session_cookie(user=user, response=response)
+    user_out = UserOut.model_validate(user)
+
+    return {**user_out.model_dump(), "access_token": token}
 
 
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Log out",
-    description="Clears the session cookie. No request body needed.",
 )
 async def logout(response: Response) -> None:
     """
-    Logout endpoint. Deletes the session cookie by setting it to an empty
-    value with max_age=0 so the browser removes it immediately.
-    No DB interaction needed — JWTs are stateless.
+    Logout endpoint. Clears the session cookie.
+    The client also discards its in-memory Bearer token.
 
     Parameters:
         response (Response) — FastAPI injects this for cookie deletion.
 
-    Returns:
-        204 No Content — nothing to return after a logout.
-
-    Used by: React Header component → api/auth.js → logout()
+    Returns: 204 No Content.
+    Used by: React Header → api/auth.js → logout()
     """
     from app.config import get_settings
     s = get_settings()
@@ -163,28 +136,18 @@ async def logout(response: Response) -> None:
     response_model=UserOut,
     status_code=status.HTTP_200_OK,
     summary="Get the current authenticated user",
-    description=(
-        "Returns the public profile of the user whose session cookie is "
-        "attached to the request. Used by the React AuthContext on mount "
-        "to restore the session without requiring a login."
-    ),
 )
 async def me(
     current_user: UserOut = Depends(get_current_user),
 ) -> UserOut:
     """
-    Session check endpoint. Validates the cookie and returns the user.
-    The heavy lifting (cookie reading, JWT decoding, DB lookup) is done
-    entirely by the get_current_user dependency — this handler is one line.
+    Session check. Accepts token from Authorization: Bearer header OR cookie.
+    Used by AuthContext on mount to restore session after page load.
 
     Parameters:
-        current_user (UserOut) — injected by Depends(get_current_user);
-                                 raises 401 automatically if the cookie is
-                                 missing, expired, or invalid.
+        current_user (UserOut) — resolved by Depends(get_current_user).
 
-    Returns:
-        UserOut — {id, name, created_at, last_login_at}
-
-    Used by: React AuthContext → api/auth.js → me()  (called on every app load)
+    Returns: UserOut — {id, name, created_at, last_login_at}
+    Used by: React AuthContext → api/auth.js → me()
     """
     return current_user

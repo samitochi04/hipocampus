@@ -1,22 +1,28 @@
 """
 app/dependencies.py
 
-Defines FastAPI Depends() callables shared across route handlers.
-Keeping them here (rather than inline in route files) means they can be
-imported by any router without creating circular imports.
+FastAPI Depends() callables shared across route handlers.
 
-Three dependencies are defined:
-  1. get_db()          — yields an async SQLAlchemy session per request
-  2. get_redis()       — returns the shared Redis client
-  3. get_current_user()— reads the JWT cookie, validates it, and returns the
-                         authenticated User ORM object (or raises 401)
+Auth flow change (Bearer token primary):
+  Previously read the JWT exclusively from the httpOnly cookie. Browsers
+  in some environments silently drop cookies set through an nginx proxy over
+  plain HTTP, so authenticated requests would return 401 even after a
+  successful login.
+
+  The dependency now checks BOTH locations in order:
+    1. Authorization: Bearer <token>  ← set by the React client after login
+    2. Cookie: hipocampus_session     ← fallback / future HTTPS production
+
+  The backend issues both on every login/register response, so older clients
+  that only use cookies still work, and new clients that use the header work
+  regardless of cookie handling.
 
 Used by: every protected route handler across app/api/v1/*.
 """
 
-from fastapi import Cookie, Depends # type: ignore
-from sqlalchemy import select # type: ignore
-from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from fastapi import Depends, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.db import get_db  # re-exported so routes only need to import from here
@@ -29,11 +35,8 @@ from app.schemas.auth import UserOut
 settings = get_settings()
 
 # ---------------------------------------------------------------------------
-# Re-export get_db so route files have a single import source
+# Re-export get_db
 # ---------------------------------------------------------------------------
-
-# `get_db` is already an async generator defined in core/db.py.
-# Re-exporting it here keeps route files from importing directly from core/.
 
 # ---------------------------------------------------------------------------
 # Redis dependency
@@ -42,18 +45,10 @@ settings = get_settings()
 
 def get_redis():
     """
-    Returns the shared async Redis client backed by the connection pool
-    opened at startup. No parameters needed — the pool is module-level state
-    in core/redis_client.py.
+    Returns the shared async Redis client.
 
-    Returns:
-        redis.asyncio.Redis — the shared client instance.
-
-    Raises:
-        RuntimeError — if called before init_redis_pool() ran (startup bug).
-
+    Returns: redis.asyncio.Redis
     Used by: any route or service that needs direct Redis access.
-             Currently: app/api/v1/chat.py → get_history()
     """
     return get_redis_client()
 
@@ -64,57 +59,60 @@ def get_redis():
 
 
 async def get_current_user(
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    session_token: str | None = Cookie(default=None, alias=settings.COOKIE_NAME),
 ) -> UserOut:
     """
-    Reads the JWT from the httpOnly cookie, decodes it, and loads the
-    corresponding User row from the database.
+    Resolves the authenticated user from the incoming request.
 
-    This is the primary auth guard — add it as a Depends() argument to any
-    route that must be authenticated:
-        @router.get("/protected")
-        async def protected(current_user: UserOut = Depends(get_current_user)):
-            ...
+    Token extraction order:
+      1. Authorization: Bearer <token> — used by the React frontend. The
+         token is returned in the login/register response body and stored
+         in the client's memory, then sent as a header on every request.
+         This bypasses any browser cookie restrictions (Secure attribute,
+         SameSite, proxy stripping, etc.).
+      2. Cookie: hipocampus_session — legacy / backup path. Used by any
+         client that stores the httpOnly cookie (e.g. curl, future native
+         app, or a browser that actually forwards it correctly).
 
     Parameters:
-        db            (AsyncSession) — injected by Depends(get_db); used to
-                                       query the users table.
-        session_token (str | None)   — JWT string read automatically from the
-                                       cookie named settings.COOKIE_NAME.
-                                       FastAPI reads it from the request; the
-                                       route handler never touches it directly.
+        request (Request)      — raw FastAPI request; gives access to both
+                                 headers and cookies without a Depends binding
+                                 that might conflict with the two-source strategy.
+        db      (AsyncSession) — injected by Depends(get_db).
 
     Returns:
-        UserOut — the validated, authenticated user as a Pydantic schema object.
-                  Does NOT return the raw ORM model so the hash is never
-                  accidentally serialised.
+        UserOut — validated, authenticated user (never the raw ORM model).
 
     Raises:
-        fastapi.HTTPException 401 — if the cookie is missing, the token is
-                                    expired, the signature is invalid, or the
-                                    user_id in the token no longer exists in DB.
-                                    The specific error message is handled by the
-                                    exception handlers in core/exceptions.py, so
-                                    this function just raises TokenInvalidError
-                                    for anything that isn't a clean decode.
+        HTTPException 401 — token missing from both sources, expired, invalid
+                            signature, or user_id no longer in the database.
 
     Used by: every protected route in app/api/v1/ via Depends(get_current_user).
     """
-    from fastapi import HTTPException  # local import to avoid circular at module level
+    from fastapi import HTTPException  # local import avoids circular at module level
 
-    if session_token is None:
+    # ── 1. Try Authorization: Bearer header ──────────────────────────────
+    token: str | None = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+
+    # ── 2. Fall back to httpOnly cookie ──────────────────────────────────
+    if not token:
+        token = request.cookies.get(settings.COOKIE_NAME)
+
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated. Please log in.")
 
-    # decode_access_token raises TokenExpiredError or TokenInvalidError on failure;
+    # decode_access_token raises TokenExpiredError / TokenInvalidError on failure;
     # those are caught by the handlers registered in main.py.
-    user_id = decode_access_token(session_token)
+    user_id = decode_access_token(token)
 
     result = await db.execute(select(User).where(User.id == user_id))
     user: User | None = result.scalars().first()
 
     if user is None:
-        # Token was valid but the account was deleted — treat as invalid.
         raise TokenInvalidError("User account not found.")
 
     return UserOut.model_validate(user)

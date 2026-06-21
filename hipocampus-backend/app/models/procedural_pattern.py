@@ -32,7 +32,7 @@ Columns:
     successful_actions  — JSONB: the action template to inject into [MEMORY_CONTEXT]
     success_rate        — 0.0–1.0 hit-rate; patterns below 0.4 are deprecated
     last_used_at        — timestamp of the most recent successful trigger
-    context_signature   — 1536-dim vector computed from trigger_conditions
+    context_signature   — 1024-dim vector computed from trigger_conditions
                           for fuzzy matching during retrieval
     created_at          — TimestampMixin
     updated_at          — TimestampMixin
@@ -47,9 +47,9 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector # type: ignore
-from sqlalchemy import DateTime, Float, String # type: ignore
-from sqlalchemy.dialects.postgresql import JSONB, UUID # type: ignore
-from sqlalchemy.orm import Mapped, mapped_column # type: ignore
+from sqlalchemy import DateTime, Float, String
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
 from app.models.base import TimestampMixin, UUIDMixin
@@ -116,7 +116,7 @@ class ProceduralPattern(UUIDMixin, TimestampMixin, Base):
     )
 
     context_signature: Mapped[list | None] = mapped_column(
-        Vector(1536),
+        Vector(1024),
         nullable=True,
         # Embedding computed from the concatenation of trigger_conditions
         # values. Used for fuzzy matching when keyword matching alone is
