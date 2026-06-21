@@ -1,5 +1,7 @@
 services:
 
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -26,6 +28,8 @@ services:
       timeout: 3s
       retries: 10
 
+  # ── Backend ─────────────────────────────────────────────────────────────────
+
   api:
     build: ./hipocampus-backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -34,16 +38,28 @@ services:
     env_file: ./hipocampus-backend/.env
     environment:
       AUTO_CREATE_TABLES: "true"
+      # COOKIE_SECURE must be false for local HTTP development.
+      # Browsers silently drop cookies with the Secure attribute when the
+      # page is served over plain http:// — login succeeds (200) but every
+      # subsequent request returns 401 because the cookie is never sent back.
+      COOKIE_SECURE: "false"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
+      # curl is not installed in python:3.12-slim, so use Python's built-in
+      # urllib instead. This is guaranteed to work in any Python image.
+      test: >
+        CMD python -c
+        "import urllib.request, sys;
+        r = urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=4);
+        sys.exit(0 if r.status == 200 else 1)"
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   worker:
     build: ./hipocampus-backend
@@ -65,6 +81,16 @@ services:
     env_file: ./hipocampus-backend/.env
     depends_on:
       - worker
+
+  # ── Frontend ────────────────────────────────────────────────────────────────
+
+  client:
+    build: ./hipocampus-client
+    ports:
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:
