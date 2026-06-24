@@ -12,9 +12,12 @@ Sub-router prefix layout after mounting at /api/v1:
     /api/v1/auth/me
     /api/v1/chat
     /api/v1/chat/history
+    /api/v1/chats                    ← new: create / list chats
+    /api/v1/chats/{id}/messages      ← new: full permanent message archive
     /api/v1/memory/conflicts
     /api/v1/memory/facts/{id}
     /api/v1/memory/export
+    /api/v1/admin/consolidate
     /api/v1/health
 
 Used by: app/main.py exclusively.
@@ -22,15 +25,13 @@ Used by: app/main.py exclusively.
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, chat, health, memory
+from app.api.v1 import admin, auth, chat, chats, health, memory
 
-# The prefix here is intentionally empty — each sub-router carries its own
-# prefix (/auth, /chat, /memory). The /health router has no prefix because
-# the endpoint is /health, not /health/something.
 v1_router = APIRouter()
 
 v1_router.include_router(auth.router)
 v1_router.include_router(chat.router)
+v1_router.include_router(chats.router)
 v1_router.include_router(memory.router)
 v1_router.include_router(health.router)
 v1_router.include_router(admin.router)
