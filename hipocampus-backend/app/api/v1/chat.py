@@ -2,20 +2,26 @@
 app/api/v1/chat.py
 
 Chat route handlers. Two endpoints:
-  POST /chat         — the main turn endpoint, delegates to chat_service.process_turn()
-  GET  /chat/history — returns the current Redis working-memory buffer for the session
+  POST /chat         — main turn endpoint, delegates to chat_service.process_turn()
+  GET  /chat/history — returns the Redis working-memory buffer for a session
 
 Both routes require authentication via Depends(get_current_user).
-No business logic lives here — the handlers validate input, delegate,
-and format the response.
 
-Used by: app/api/v1/router.py, which mounts this router under /chat.
+Changes from original:
+  - POST /chat now passes body.session_id to process_turn() so the service
+    knows which Chat row to write messages to (or creates a new one).
+  - GET /chat/history accepts an optional ?session_id= query parameter so
+    the multi-chat frontend can load the buffer for any specific session.
+    Falls back to the legacy daily session if no session_id is supplied
+    (backward-compatible with the old single-chat UI).
+
+Used by: app/api/v1/router.py, mounted under /chat.
 """
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status # type: ignore
-from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.exceptions import MemoryConflictError
@@ -27,7 +33,7 @@ from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
 )
-from app.services.chat_service import process_turn
+from app.services.chat_service import _get_or_create_session_id, process_turn
 from app.services.memory_engine.qwen_router import QwenAPIError
 from app.services.memory_engine.redis_buffer import get_buffer
 
@@ -41,12 +47,6 @@ router = APIRouter(prefix="/chat", tags=["chat"])
     response_model=ChatResponse,
     status_code=status.HTTP_200_OK,
     summary="Send a message",
-    description=(
-        "Processes one chat turn through the full memory pipeline: "
-        "retrieves multi-tier context, assembles the prompt, calls Qwen-Max, "
-        "scores and stores the episode, and returns the model's response. "
-        "Returns 409 if the message contradicts a stored high-confidence preference."
-    ),
 )
 async def chat(
     body: ChatRequest,
@@ -54,43 +54,52 @@ async def chat(
     db: AsyncSession = Depends(get_db),
 ) -> ChatResponse:
     """
-    Main chat turn endpoint. Delegates entirely to chat_service.process_turn().
+    Main chat turn endpoint.
+
+    Passes body.session_id to process_turn() which resolves (or creates) the
+    Chat row, saves both turns to the messages archive, and returns the LLM
+    response with the active session_id and chat_id included so the client
+    can track which conversation it's in.
 
     Parameters:
-        body         (ChatRequest) — validated request body containing the user message.
-        current_user (UserOut)     — injected by Depends(get_current_user); raises 401
-                                     automatically if the cookie is missing or expired.
+        body         (ChatRequest) — {message, session_id?}
+        current_user (UserOut)     — resolved by Depends(get_current_user).
         db           (AsyncSession)— async DB session from Depends(get_db).
 
     Returns:
-        ChatResponse — {session_id, response, context_tokens_used, importance_score}
+        ChatResponse — {session_id, chat_id, response,
+                        context_tokens_used, importance_score}
 
-    Raises (mapped to HTTP responses):
-        MemoryConflictError → 409 (handled by the exception handler in main.py,
-                                   the React client shows the conflict resolution UI)
-        QwenAPIError        → 503 (Qwen API unreachable or rate-limited)
-        SessionBufferError  → 503 (handled by the exception handler in main.py)
-
-    Used by: React ChatInput component → api/chat.js → sendMessage()
+    Raises:
+        MemoryConflictError → 409
+        QwenAPIError        → 503
     """
     try:
         return await process_turn(
             user_message=body.message,
+            session_id=body.session_id,
             current_user=current_user,
             db=db,
         )
     except MemoryConflictError:
-        # Re-raise so the registered exception handler in main.py formats
-        # the 409 response with the conflict detail and "type" field.
         raise
     except QwenAPIError as exc:
-        logger.error("Qwen API error during chat turn for user %s: %s", current_user.id, exc)
+        logger.error(
+            "Qwen API error during chat turn for user %s: %s",
+            current_user.id, exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The AI service is temporarily unavailable. Please try again in a moment.",
+            detail="The AI service is temporarily unavailable. Please try again.",
         )
+    except HTTPException:
+        # Re-raise FastAPI exceptions (e.g. 404 for unknown session_id) unchanged.
+        raise
     except Exception as exc:
-        logger.error("Unexpected error in chat turn for user %s: %s", current_user.id, exc)
+        logger.error(
+            "Unexpected error in chat turn for user %s: %s",
+            current_user.id, exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred. Please try again.",
@@ -101,41 +110,43 @@ async def chat(
     "/history",
     response_model=ChatHistoryResponse,
     status_code=status.HTTP_200_OK,
-    summary="Get current session history",
-    description=(
-        "Returns the contents of the Redis working-memory buffer for the "
-        "user's current session — up to the last 10 messages (5 full turns). "
-        "Returns an empty message list if the session has expired or no messages "
-        "have been sent yet."
-    ),
+    summary="Get working-memory buffer for a session",
 )
 async def get_history(
+    session_id: str | None = Query(
+        default=None,
+        description=(
+            "The session_id of the chat whose Redis buffer to return. "
+            "Omit to use the legacy daily session (backward-compatible)."
+        ),
+    ),
     current_user: UserOut = Depends(get_current_user),
 ) -> ChatHistoryResponse:
     """
-    Session history endpoint. Reads directly from the Redis buffer without
-    touching PostgreSQL, so it is always fast regardless of episode count.
+    Returns the Redis working-memory buffer (last 10 messages, 1h TTL).
+
+    With multi-chat, the client passes ?session_id=<chat.session_id> to
+    load the buffer for a specific conversation. Without it, the endpoint
+    falls back to the legacy daily session so the existing frontend keeps
+    working until Batch 5 updates it.
+
+    For full permanent history (no TTL) use GET /api/v1/chats/{id}/messages.
 
     Parameters:
-        current_user (UserOut) — injected by Depends(get_current_user).
+        session_id   (str | None) — query param, optional.
+        current_user (UserOut)    — resolved by Depends(get_current_user).
 
     Returns:
-        ChatHistoryResponse — {session_id, messages: [{role, content}, ...]}
-                              Messages are ordered oldest → newest.
-
-    Used by: React ChatWindow component on mount to restore visible history
-             after a page refresh (the buffer survives within its 1h TTL).
+        ChatHistoryResponse — {session_id, messages: [{role, content}]}
     """
-    from app.services.chat_service import _get_or_create_session_id
-
     user_id = str(current_user.id)
-    session_id = _get_or_create_session_id(user_id)
+    active_session = session_id or _get_or_create_session_id(user_id)
     redis = get_redis()
 
     raw_messages = await get_buffer(
         redis=redis,
         user_id=user_id,
-        session_id=session_id,
+        session_id=active_session,
     )
 
     messages = [
@@ -144,4 +155,4 @@ async def get_history(
         if "role" in m and "content" in m
     ]
 
-    return ChatHistoryResponse(session_id=session_id, messages=messages)
+    return ChatHistoryResponse(session_id=active_session, messages=messages)
