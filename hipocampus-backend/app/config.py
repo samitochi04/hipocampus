@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     #   CORS_ORIGINS=http://localhost:5173,http://localhost:3000
     CORS_ORIGINS: str = "http://localhost:5173"
 
+    # --- Dev convenience -------------------------------------------------------
+    # When true, create_all_tables() runs on startup so you don't need Alembic
+    # for local development. Always false in production — use Alembic migrations.
+    # Must be a Settings field (not os.getenv) so pydantic-settings reads it
+    # from .env / .env.local files correctly.
+    AUTO_CREATE_TABLES: bool = False
+
     model_config = SettingsConfigDict(
         # Pydantic-settings accepts a list of env files and merges them in
         # order — later files take priority over earlier ones. Missing files

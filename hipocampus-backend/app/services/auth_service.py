@@ -15,9 +15,9 @@ Used by: app/api/v1/auth.py exclusively.
 
 from datetime import UTC, datetime
 
-from fastapi import Response # type: ignore
-from sqlalchemy import select # type: ignore
-from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from fastapi import Response
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.exceptions import InvalidLoginKeyError
@@ -106,10 +106,10 @@ async def authenticate_with_key(login_key: str, db: AsyncSession) -> User:
 
     Used by: app/api/v1/auth.py → login()
     """
-    # Extract the name slug: "alice-3Kx9mN..." → "alice"
-    # The slug is everything before the last hyphen-separated token block.
-    # generate_login_key always produces "slug-24chartoken", so rsplit on "-"
-    # with maxsplit=1 and take index 0 gives the slug reliably.
+    # Extract the name slug: "alice-3kx9mn..." → "alice"
+    # Key format: "{slug}-{48hexchars}" — token is hex-only (no hyphens), so
+    # rsplit on the last "-" always lands at the slug/token boundary.
+
     parts = login_key.rsplit("-", maxsplit=1)
     if len(parts) < 2:  # Malformed key — fail fast
         raise InvalidLoginKeyError("Login key format is invalid.")

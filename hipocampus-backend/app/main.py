@@ -21,11 +21,10 @@ Used by: uvicorn (directly), Docker CMD, and tests via TestClient/AsyncClient.
 
 import os
 import logging
-from typing import Literal, cast
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI # type: ignore
-from fastapi.middleware.cors import CORSMiddleware # type: ignore
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import v1_router
 from app.config import get_settings
@@ -49,11 +48,7 @@ settings = get_settings()
 # Logging — must be configured before anything else logs.
 # ---------------------------------------------------------------------------
 
-LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-
-setup_logging(
-    level=cast(LogLevel, os.getenv("LOG_LEVEL", "INFO"))
-)
+setup_logging(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 
@@ -94,7 +89,7 @@ async def lifespan(app: FastAPI):
     # In local dev, create tables automatically so you don't need to run
     # Alembic before the first request. In production this line is a no-op
     # because Alembic migrations already created the tables.
-    if os.getenv("AUTO_CREATE_TABLES", "false").lower() == "true":
+    if settings.AUTO_CREATE_TABLES:
         from app.core.db import create_all_tables
         await create_all_tables()
         logger.info("Database tables verified / created (AUTO_CREATE_TABLES=true).")
@@ -147,6 +142,12 @@ def create_app() -> FastAPI:
     )
 
     # ── CORS ─────────────────────────────────────────────────────────────────
+    # allow_credentials=True is required for the browser to send and receive
+    # httpOnly cookies cross-origin. It MUST be paired with explicit origins —
+    # allow_origins=["*"] is forbidden when credentials=True.
+    # settings.CORS_ORIGINS is a comma-separated str; split it here so the
+    # field stays a plain string in config.py (avoids pydantic-settings
+    # trying to json.loads() a list field from the .env source).
     cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
     application.add_middleware(
         CORSMiddleware,
@@ -158,6 +159,9 @@ def create_app() -> FastAPI:
     )
 
     # ── Exception handlers ───────────────────────────────────────────────────
+    # Each handler maps one custom exception class to a clean JSON response.
+    # Adding a new exception type means: define it in core/exceptions.py,
+    # write its handler there, and register it here.
     application.add_exception_handler(InvalidLoginKeyError, invalid_login_key_handler)
     application.add_exception_handler(TokenExpiredError, token_expired_handler)
     application.add_exception_handler(TokenInvalidError, token_invalid_handler)

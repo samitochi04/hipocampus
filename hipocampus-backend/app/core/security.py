@@ -19,12 +19,12 @@ import secrets
 import re
 from datetime import UTC, datetime, timedelta
 
-import jwt # type: ignore
-from argon2 import PasswordHasher # type: ignore
-from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError # type: ignore
+import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 
 from app.config import get_settings
-from app.core.exceptions import InvalidLoginKeyError, TokenExpiredError, TokenInvalidError # type: ignore
+from app.core.exceptions import InvalidLoginKeyError, TokenExpiredError, TokenInvalidError
 
 settings = get_settings()
 
@@ -64,7 +64,13 @@ def generate_login_key(name: str) -> str:
     Used by: app/services/auth_service.py → create_user_with_key().
     """
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "user"
-    token = secrets.token_urlsafe(24)   # 24 bytes → 32-char URL-safe string
+    # token_hex produces only 0-9a-f characters — no hyphens — so the key
+    # format is unambiguously "{slug}-{48hexchars}". Using rsplit("-", maxsplit=1)
+    # in auth_service.py then reliably extracts the slug regardless of how many
+    # hyphens the slug itself has (e.g. "alex-chen-{hex}").
+    # token_urlsafe was the previous choice but can produce "-" in its output,
+    # causing rsplit to split inside the token instead of at the slug boundary.
+    token = secrets.token_hex(24)    # 24 bytes → 48 lowercase hex chars, no hyphens
     return f"{slug}-{token}"
 
 
