@@ -1,28 +1,47 @@
 """
 app/schemas/chat.py
 
-Pydantic v2 request and response models for the chat endpoint.
-The session_id is generated server-side, not supplied by the client,
-so it only appears in responses.
+Pydantic v2 request and response models for the chat and chats endpoints.
 
-Used by: app/api/v1/chat.py route handlers.
+Changes from the original file:
+  - ChatRequest gains an optional `session_id` field. When the client sends
+    a session_id it continues an existing chat; when it omits it the service
+    creates a new Chat row and generates a fresh session_id server-side.
+  - ChatOut, ChatListItem, MessageOut, and ChatMessagesResponse are new
+    schemas for the GET/POST /chats and GET /chats/{id}/messages endpoints.
+
+Used by:
+    app/api/v1/chat.py    — ChatRequest, ChatResponse, ChatHistoryResponse
+    app/api/v1/chats.py   — ChatOut, ChatListItem, MessageOut, ChatMessagesResponse
+    app/services/chat_service.py — ChatRequest (reads session_id)
 """
 
+import uuid
+from datetime import datetime
+
 from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Chat turn (existing endpoint POST /api/v1/chat)
+# ---------------------------------------------------------------------------
 
 
 class ChatRequest(BaseModel):
     """
     Body the client sends to POST /api/v1/chat.
-    The user_id is read from the JWT cookie via get_current_user(),
-    so it is NOT included here — the client never sends its own identity.
 
     Parameters:
-        message (str) — the raw user message, 1–8000 characters.
-                        8000 is a safe ceiling below the Qwen-Max context limit
-                        while still allowing long technical prompts.
+        message    (str)       — the raw user message, 1–8000 characters.
+        session_id (str | None) — identifies which chat this turn belongs to.
+                                  • If provided: must match an existing chats.session_id
+                                    owned by the current user. The turn is appended
+                                    to that chat's Redis buffer and messages archive.
+                                  • If None: the service creates a new Chat row with a
+                                    fresh session_id and starts a new conversation.
 
     Used by: app/api/v1/chat.py → chat()
+             app/services/chat_service.py → process_turn()
     """
 
     message: str = Field(
@@ -32,24 +51,37 @@ class ChatRequest(BaseModel):
         description="The user's message for this turn.",
     )
 
+    session_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "The session_id of an existing chat to continue. "
+            "Omit to start a new chat (a new Chat row is created automatically)."
+        ),
+    )
+
 
 class ChatResponse(BaseModel):
     """
     Body returned by POST /api/v1/chat on success.
 
     Parameters:
-        session_id          (str)  — the session key used for the Redis buffer,
-                                     so the client can track which session it's in.
-        response            (str)  — the LLM's response for this turn.
-        context_tokens_used (int)  — how many tokens the [MEMORY_CONTEXT] block
-                                     consumed; useful for debugging retrieval depth.
-        importance_score    (float)— the score computed by score_importance(); exposed
-                                     so the frontend can show memory indicators if desired.
+        session_id          (str)   — the session key in use for this turn.
+                                      Matches chats.session_id. The client stores
+                                      this and sends it on subsequent turns to
+                                      stay in the same chat.
+        chat_id             (str)   — UUID of the Chat row. Used by the client
+                                      to navigate to /chat/:chatId after the
+                                      first turn of a new chat.
+        response            (str)   — the LLM's reply for this turn.
+        context_tokens_used (int)   — tokens consumed by the [MEMORY_CONTEXT] block.
+        importance_score    (float) — 0–1 importance of this turn.
 
     Used by: app/api/v1/chat.py → chat()
     """
 
     session_id: str
+    chat_id: str
     response: str
     context_tokens_used: int
     importance_score: float
@@ -57,8 +89,7 @@ class ChatResponse(BaseModel):
 
 class ChatHistoryMessage(BaseModel):
     """
-    A single message object from the Redis working-memory buffer,
-    returned as part of the GET /api/v1/chat/history response.
+    A single message from the Redis working-memory buffer.
 
     Parameters:
         role    (str) — "user" or "assistant"
@@ -74,14 +105,121 @@ class ChatHistoryMessage(BaseModel):
 class ChatHistoryResponse(BaseModel):
     """
     Full response body for GET /api/v1/chat/history.
+    Returns only what is in the Redis buffer (last 10 messages, 1h TTL).
+    For the full permanent archive use GET /api/v1/chats/{id}/messages.
 
     Parameters:
         session_id (str)                    — the session the buffer belongs to.
-        messages   (list[ChatHistoryMessage])— ordered oldest-to-newest slice of
-                                              the Redis sliding window (up to 10 msgs).
+        messages   (list[ChatHistoryMessage])— oldest-to-newest slice of the
+                                              Redis sliding window (up to 10).
 
     Used by: app/api/v1/chat.py → get_history()
     """
 
     session_id: str
     messages: list[ChatHistoryMessage]
+
+
+# ---------------------------------------------------------------------------
+# Chat metadata (new endpoints GET/POST /api/v1/chats)
+# ---------------------------------------------------------------------------
+
+
+class ChatOut(BaseModel):
+    """
+    Full representation of a Chat row returned by POST /api/v1/chats
+    and GET /api/v1/chats/{id}.
+
+    Parameters:
+        id         (str)       — UUID of the Chat row.
+        session_id (str)       — the session key that links this chat to
+                                 episodes, the Redis buffer, and messages.
+        title      (str | None)— 4–6 word title generated by Qwen, or None
+                                 if generation is still pending (first turn
+                                 hasn't completed yet).
+        created_at (datetime)  — when the chat was created.
+
+    Used by: app/api/v1/chats.py → create_chat(), get_chat()
+    """
+
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    session_id: str
+    title: str | None
+    created_at: datetime
+
+
+class ChatListItem(BaseModel):
+    """
+    Lightweight summary of a Chat row for the sidebar list.
+    Omits the full message list to keep the response small.
+
+    Parameters:
+        id              (str)       — UUID of the Chat row.
+        session_id      (str)       — the session key.
+        title           (str | None)— generated title or None if pending.
+        created_at      (datetime)  — when the chat was created.
+        message_count   (int)       — total number of messages (user + assistant).
+                                      Computed by the query, not stored.
+        last_message_at (datetime | None) — created_at of the most recent message,
+                                            None if the chat has no messages yet.
+
+    Used by: app/api/v1/chats.py → list_chats()
+    """
+
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    session_id: str
+    title: str | None
+    created_at: datetime
+    message_count: int = 0
+    last_message_at: datetime | None = None
+
+
+class MessageOut(BaseModel):
+    """
+    Full representation of a single Message row.
+
+    Parameters:
+        id         (str)      — UUID of the message.
+        chat_id    (str)      — UUID of the parent Chat.
+        session_id (str)      — the session key (matches chats.session_id).
+        role       (str)      — "user" or "assistant".
+        content    (str)      — the raw message text.
+        created_at (datetime) — when this turn was saved.
+
+    Used by: app/api/v1/chats.py → get_chat_messages()
+    """
+
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    chat_id: uuid.UUID
+    session_id: str
+    role: str
+    content: str
+    created_at: datetime
+
+
+class ChatMessagesResponse(BaseModel):
+    """
+    Full response body for GET /api/v1/chats/{id}/messages.
+    Returns the permanent archive of all turns for a chat, oldest first.
+    This is what the user sees when they open an old conversation to
+    retrieve a code snippet or review a decision.
+
+    Parameters:
+        chat_id    (str)            — UUID of the chat.
+        session_id (str)            — the session key.
+        title      (str | None)     — the chat's generated title.
+        messages   (list[MessageOut])— all turns, ordered oldest → newest.
+
+    Used by: app/api/v1/chats.py → get_chat_messages()
+    """
+
+    chat_id: uuid.UUID
+    session_id: str
+    title: str | None
+    messages: list[MessageOut]

@@ -15,5 +15,6 @@ from app.models.user import User  # noqa: F401
 from app.models.episode import Episode  # noqa: F401
 from app.models.semantic_fact import SemanticFact  # noqa: F401
 from app.models.procedural_pattern import ProceduralPattern  # noqa: F401
+from app.models.chat import Chat, Message  # noqa: F401
 
-__all__ = ["User", "Episode", "SemanticFact", "ProceduralPattern"]
+__all__ = ["User", "Episode", "SemanticFact", "ProceduralPattern", "Chat", "Message"]
