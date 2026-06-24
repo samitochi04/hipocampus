@@ -110,40 +110,50 @@ export function AuthProvider({ children }) {
 
   /**
    * register
-   * Creates a new account. On success the backend sets the session cookie,
-   * so the user is immediately logged in. Returns the one-time login key
-   * so RegisterPage can pass it to LoginKeyDisplay.
+   * Creates a new account. Returns the one-time login key so RegisterPage
+   * can show it to the user before navigating anywhere.
+   *
+   * IMPORTANT: deliberately does NOT call setUser() here. If we set user
+   * state during registration, the RegisterPage useEffect sees user != null
+   * and immediately redirects to /chat before LoginKeyDisplay ever renders —
+   * the user never sees their login key.
+   *
+   * Instead, the token is stored in sessionStorage by auth.js.register().
+   * After the user confirms they have saved the key, RegisterPage calls
+   * refreshUser() which fetches the profile and sets user state, then
+   * navigates to /chat.
    *
    * Parameters:
    *   name (string) — display name from the registration form.
    *
    * Returns:
-   *   Promise<{ login_key: string, user_id: string, message: string }>
-   *   login_key — the plaintext key to show to the user exactly once.
-   *
-   * Throws:
-   *   ApiError — propagated to the caller (RegisterForm handles the error state).
-   *
-   * Side-effects:
-   *   - Sets user state from a subsequent /auth/me call so the profile is
-   *     populated in context after registration.
-   *   - Does NOT navigate — RegisterPage decides where to go after the key
-   *     has been acknowledged by the user.
+   *   Promise<{ login_key, user_id, message, access_token }>
    *
    * Used by: src/pages/RegisterPage.jsx → handleRegister().
    */
   const register = useCallback(async (name) => {
-    const result = await authApi.register(name);
-    // Fetch the full profile so user state is populated in context.
-    // register() already set the session cookie, so /me will succeed.
+    // auth.js.register() stores the token in sessionStorage via setAuthToken.
+    // We return the result so RegisterPage can extract login_key.
+    return await authApi.register(name);
+  }, []);
+
+  /**
+   * refreshUser
+   * Fetches the current user from /auth/me using the stored Bearer token and
+   * sets user state. Called by RegisterPage after the user confirms the key,
+   * just before navigating to /chat.
+   *
+   * Parameters: none.
+   * Returns: Promise<void>.
+   * Used by: src/pages/RegisterPage.jsx → handleConfirmed().
+   */
+  const refreshUser = useCallback(async () => {
     try {
       const profile = await authApi.me();
       setUser(profile);
     } catch {
-      // If /me fails after registration, the user can still proceed —
-      // the login key is the important thing to show.
+      setUser(null);
     }
-    return result;
   }, []);
 
   /**
@@ -208,6 +218,7 @@ export function AuthProvider({ children }) {
     register,
     login,
     logout,
+    refreshUser,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

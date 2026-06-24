@@ -10,7 +10,7 @@
  *   src/components/memory/FactCard.jsx     — updateFact() (edit fact text)
  */
 
-import { get, patch } from "./client.js";
+import { get, patch, post } from "./client.js";
 
 // ---------------------------------------------------------------------------
 // Conflicts
@@ -159,4 +159,23 @@ export function updateFact(factId, data) {
  */
 export function exportMemory() {
   return get("/api/v1/memory/export");
+}
+
+// ---------------------------------------------------------------------------
+// Manual consolidation trigger (demo / dev)
+// ---------------------------------------------------------------------------
+
+/**
+ * consolidateNow
+ * Triggers the sleep consolidation pipeline immediately for the current user.
+ * Returns the summary dict the nightly task produces. Used by the
+ * "Consolidate Now" button on MemoryPage so the demo can show semantic facts
+ * appearing in the memory dashboard without waiting for the 3 AM schedule.
+ *
+ * Parameters: none.
+ * Returns: Promise<{ episodes_processed, facts_written, conflicts_detected, patterns_updated }>
+ * Used by: src/pages/MemoryPage.jsx → handleConsolidateNow().
+ */
+export function consolidateNow() {
+  return post("/api/v1/admin/consolidate");
 }

@@ -6,8 +6,15 @@
  *   Step 1 — RegisterForm: user enters their name.
  *   Step 2 — LoginKeyDisplay: user reads and confirms saving their login key.
  *
- * If the user already has a valid session (e.g. they navigated to /register
- * while still logged in), they are immediately redirected to /chat.
+ * Race condition fix:
+ *   Previously, AuthContext.register() called setUser() which immediately
+ *   triggered this page's redirect useEffect, sending the user to /chat before
+ *   LoginKeyDisplay ever rendered — the login key was never shown.
+ *
+ *   Fix: register() no longer calls setUser(). Instead, after the user
+ *   confirms they have saved the key, handleConfirmed() calls refreshUser()
+ *   (fetches /auth/me with the stored Bearer token) to populate user state,
+ *   then navigates to /chat.
  *
  * Used by: src/App.jsx (public route).
  */
@@ -20,40 +27,52 @@ import LoginKeyDisplay from "../components/auth/LoginKeyDisplay.jsx";
 
 /**
  * RegisterPage
- * Orchestrates the registration flow. No business logic — delegates to
- * RegisterForm and LoginKeyDisplay.
+ * Orchestrates the registration flow.
  *
  * Parameters: none.
  * Returns: JSX.Element.
  * Used by: src/App.jsx.
  */
 export default function RegisterPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, refreshUser } = useAuth();
   const navigate = useNavigate();
-
-  /**
-   * loginKey state
-   * Null until RegisterForm succeeds and calls onSuccess with the key.
-   * When non-null, the page switches from RegisterForm to LoginKeyDisplay.
-   */
   const [loginKey, setLoginKey] = useState(null);
+  const [confirming, setConfirming] = useState(false);
 
   /**
-   * Redirect if already logged in.
-   * Runs after the initial session check completes (loading=false).
-   * Avoids showing the registration form to a user who is already authenticated.
+   * Redirect already-authenticated users to /chat.
+   * Only fires when loginKey is null — i.e. the user arrived at /register
+   * while already logged in, NOT during the registration key-display step.
+   * This guards against the race condition where setUser() during registration
+   * would immediately trigger this redirect before the key is shown.
    */
   useEffect(() => {
-    if (!loading && user) {
+    if (!loading && user && !loginKey) {
       navigate("/chat", { replace: true });
     }
-  }, [user, loading, navigate]);
+  }, [user, loading, navigate, loginKey]);
 
-  // Show nothing while the session check is in flight.
   if (loading) return null;
+  if (user && !loginKey) return null;
 
-  // Don't render the form if already authenticated (redirect is in progress).
-  if (user) return null;
+  /**
+   * handleConfirmed
+   * Called when the user checks "I've saved my key" and clicks Continue.
+   * Fetches the user profile (token is already in sessionStorage from
+   * registration), sets user state, then navigates to chat.
+   *
+   * Parameters: none.
+   * Returns: void (async).
+   */
+  async function handleConfirmed() {
+    setConfirming(true);
+    try {
+      await refreshUser(); // populates user state via /auth/me + stored token
+      navigate("/chat", { replace: true });
+    } finally {
+      setConfirming(false);
+    }
+  }
 
   return (
     <div className="auth-layout">
@@ -61,12 +80,12 @@ export default function RegisterPage() {
         {loginKey ? (
           /**
            * Step 2 — LoginKeyDisplay
-           * Shows the one-time key. On confirmation navigates to /chat.
-           * The user is already logged in at this point (register() set the cookie).
+           * Shows the one-time key. The user MUST confirm before we navigate.
+           * onConfirmed calls refreshUser() then navigate("/chat").
            */
           <LoginKeyDisplay
             loginKey={loginKey}
-            onConfirmed={() => navigate("/chat", { replace: true })}
+            onConfirmed={handleConfirmed}
           />
         ) : (
           /**

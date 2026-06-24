@@ -8,7 +8,7 @@ get_settings() from here instead of reading os.environ directly.
 
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings, SettingsConfigDict # type: ignore
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -41,9 +41,29 @@ class Settings(BaseSettings):
     QWEN_ENDPOINT: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
     # --- CORS ---------------------------------------------------------
+    # Stored as a plain comma-separated string so pydantic-settings never
+    # tries to json.loads() it. Parsed into a list once in main.py when
+    # CORSMiddleware is configured.
+    # Examples in .env:
+    #   CORS_ORIGINS=http://localhost:5173
+    #   CORS_ORIGINS=http://localhost:5173,http://localhost:3000
     CORS_ORIGINS: str = "http://localhost:5173"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        # Pydantic-settings accepts a list of env files and merges them in
+        # order — later files take priority over earlier ones. Missing files
+        # are silently ignored, so this is safe in both environments:
+        #
+        #   Docker  — only .env exists → Docker hostnames (postgres, redis)
+        #             and CORS_ORIGINS=http://localhost:3000 are loaded.
+        #
+        #   Local   — both files exist → .env.local overrides DB_URL,
+        #             REDIS_URL, and CORS_ORIGINS with localhost values
+        #             for running the API directly with `uvicorn --reload`.
+        env_file=[".env", ".env.local"],
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 @lru_cache

@@ -27,8 +27,8 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select, text, update # type: ignore
-from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.models.episode import Episode
@@ -98,7 +98,10 @@ async def _fetch_pending_episodes(user_id: str, db: AsyncSession) -> list[Episod
         .where(Episode.user_id == user_id)
         .where(Episode.promoted == False)  # noqa: E712
         .where(Episode.importance_score >= MIN_IMPORTANCE_FOR_CONSOLIDATION)
-        .where(Episode.embedding.isnot(None))
+        # NOTE: embedding may be NULL if the background embed task failed
+        # (e.g. API error during the turn). We still consolidate these episodes —
+        # the consolidation pipeline re-embeds the extracted *facts*, not the
+        # episode rows themselves, so a NULL episode embedding is harmless here.
         .order_by(Episode.created_at.desc())
         .limit(MAX_EPISODES_PER_RUN)
     )
@@ -477,6 +480,11 @@ async def consolidate_user_memory(user_id: str) -> dict:
             all_semantic_facts: list[dict] = []
             all_procedural_patterns: list[dict] = []
             all_to_forget: list[str] = []
+            # Only promote episodes from chunks that succeeded — if Qwen
+            # fails for a chunk, those episodes stay unpromoted so they are
+            # retried on the next consolidation run rather than being silently
+            # dropped forever.
+            successfully_processed_ids: list[str] = []
 
             chunks = [
                 episode_dicts[i : i + CHUNK_SIZE]
@@ -489,6 +497,8 @@ async def consolidate_user_memory(user_id: str) -> dict:
                     all_semantic_facts.extend(result.get("semantic_facts", []))
                     all_procedural_patterns.extend(result.get("procedural_patterns", []))
                     all_to_forget.extend(result.get("to_forget", []))
+                    # Mark only this chunk's episodes for promotion.
+                    successfully_processed_ids.extend(ep["id"] for ep in chunk)
                 except Exception as exc:
                     logger.error(
                         "Chunk consolidation failed for user %s: %s", user_id, exc
@@ -510,7 +520,9 @@ async def consolidate_user_memory(user_id: str) -> dict:
             summary["patterns_written"] = len(all_procedural_patterns)
 
             # ── Phase F ────────────────────────────────────────────────────
-            await _mark_promoted(episode_ids, db)
+            # Only promote episodes whose chunk completed without error.
+            if successfully_processed_ids:
+                await _mark_promoted(successfully_processed_ids, db)
 
             await db.commit()
             logger.info("consolidate_user_memory complete: %s", summary)

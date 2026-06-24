@@ -23,8 +23,8 @@ Used by: app/services/chat_service.py → process_turn()
 import logging
 import math
 
-from sqlalchemy import func, select, text # type: ignore
-from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.episode import Episode
 from app.services.memory_engine.qwen_router import embed_text
@@ -237,9 +237,28 @@ async def score_importance(
             .where(Episode.embedding.isnot(None))
         )
         centroid_row = centroid_result.first()
-        centroid_embedding: list[float] | None = (
-            list(centroid_row.centroid) if centroid_row and centroid_row.centroid is not None else None
-        )
+
+        # pgvector's avg() aggregate may return the vector as a string
+        # '[-0.12, 0.34, ...]' rather than a list[float], depending on the
+        # SQLAlchemy driver version. list(string) iterates over characters
+        # which causes "can't multiply sequence by non-int of type 'float'"
+        # inside _surprise_delta. We detect and handle both return types.
+        centroid_embedding: list[float] | None = None
+        if centroid_row and centroid_row.centroid is not None:
+            raw = centroid_row.centroid
+            if isinstance(raw, str):
+                # String form: '[0.1, 0.2, ...]' — parse as JSON list.
+                import json as _json
+                try:
+                    centroid_embedding = _json.loads(raw)
+                except (_json.JSONDecodeError, ValueError):
+                    # Fallback: strip brackets and split on commas.
+                    centroid_embedding = [
+                        float(x) for x in raw.strip("[] \n").split(",") if x.strip()
+                    ]
+            else:
+                # Already iterable (pgvector Python type or list).
+                centroid_embedding = list(raw)
         surprise = _surprise_delta(current_embedding, centroid_embedding)
 
         # ── Signal 4: explicit flag ─────────────────────────────────────────

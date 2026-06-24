@@ -78,7 +78,10 @@ export function clearAuthToken() {
  */
 function getAuthToken() {
   if (!_token) {
-    try { _token = sessionStorage.getItem(SESSION_KEY); } catch { /* storage blocked */ }
+    try { _token = sessionStorage.getItem(SESSION_KEY); } 
+    catch { 
+      console.log("Not token found");
+     }
   }
   return _token;
 }

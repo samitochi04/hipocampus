@@ -12,7 +12,7 @@ all Qwen traffic flows through here so that:
 
 Models used:
   - qwen-max       → chat generation, query expansion, conflict resolution
-  - qwen-long      → sleep consolidation (processes up to 32 episodes per chunk)
+  - qwen-max       → sleep consolidation (processes up to 32 episodes per chunk)
 
 All functions are async and raise QwenAPIError on non-recoverable failures
 so callers get one exception type to handle regardless of the underlying
@@ -231,7 +231,7 @@ async def expand_query(user_message: str) -> list[str]:
 
 async def consolidate_episodes(episodes: list[dict]) -> dict:
     """
-    Sends a batch of up to 32 episode dicts to qwen-long for overnight
+    Sends a batch of up to 32 episode dicts to qwen-max for overnight
     sleep consolidation. The model extracts distilled semantic facts,
     procedural patterns, and identifies low-value episodes to forget.
 
@@ -271,7 +271,7 @@ async def consolidate_episodes(episodes: list[dict]) -> dict:
         f"Episodes:\n{episodes_text}"
     )
     payload = {
-        "model": "qwen-long",
+        "model": "qwen-max",
         "temperature": 0.2,
         "max_tokens": 4096,
         "messages": [{"role": "user", "content": prompt}],
@@ -286,7 +286,7 @@ async def consolidate_episodes(episodes: list[dict]) -> dict:
         if isinstance(result, dict):
             return {**empty, **result}
     except json.JSONDecodeError:
-        logger.error("consolidate_episodes: failed to parse JSON response from qwen-long.")
+        logger.error("consolidate_episodes: failed to parse JSON response from qwen-max.")
 
     return empty
 
@@ -348,7 +348,7 @@ async def resolve_conflict(existing_fact: str, new_fact: str) -> dict:
 
 async def embed_text(text: str) -> list[float]:
     """
-    Generates a 1O24-dimensional embedding vector for a given text string
+    Generates a 1024-dimensional embedding vector for a given text string
     using the text-embedding-v3 model on DashScope.
     Used to populate the embedding columns in all three memory tables and
     to compute the query vector for pgvector similarity searches.

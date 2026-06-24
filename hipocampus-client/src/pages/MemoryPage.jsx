@@ -19,7 +19,7 @@ import { useCallback, useEffect, useState } from "react";
 import Header from "../components/layout/Header.jsx";
 import ConflictList from "../components/memory/ConflictList.jsx";
 import FactCard from "../components/memory/FactCard.jsx";
-import { exportMemory, getConflicts } from "../api/memory.js";
+import { consolidateNow, exportMemory, getConflicts } from "../api/memory.js";
 import { ApiError } from "../api/client.js";
 
 /**
@@ -36,6 +36,8 @@ export default function MemoryPage() {
   const [loadingData, setLoadingData] = useState(true);
   const [fetchError, setFetchError] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidationResult, setConsolidationResult] = useState(null);
 
   // ── Fetch on mount ─────────────────────────────────────────────────────
 
@@ -119,6 +121,26 @@ export default function MemoryPage() {
   // ── Export handler ────────────────────────────────────────────────────
 
   /**
+   * handleConsolidateNow
+   * Triggers the sleep consolidation pipeline for the current user immediately,
+   * then reloads the memory data so the UI shows the freshly extracted facts.
+   */
+  async function handleConsolidateNow() {
+    setConsolidating(true);
+    setConsolidationResult(null);
+    try {
+      const result = await consolidateNow();
+      setConsolidationResult(result);
+      // Reload memory data so newly extracted facts appear without a manual refresh.
+      await loadData();
+    } catch {
+      setConsolidationResult({ error: "Consolidation failed. Check the API logs." });
+    } finally {
+      setConsolidating(false);
+    }
+  }
+
+  /**
    * handleExport
    * Fetches the full memory export and triggers a JSON file download in
    * the browser using a temporary anchor element.
@@ -167,18 +189,54 @@ export default function MemoryPage() {
                 decisions, and patterns.
               </p>
             </div>
-            <button
-              onClick={handleExport}
-              disabled={exporting || loadingData}
-              style={
-                exporting || loadingData
-                  ? { ...styles.exportBtn, opacity: 0.5, cursor: "not-allowed" }
-                  : styles.exportBtn
-              }
-            >
-              {exporting ? "Exporting…" : "↓ Export JSON"}
-            </button>
+            <div style={{ display: "flex", gap: "var(--sp-3)" }}>
+              <button
+                onClick={handleConsolidateNow}
+                disabled={consolidating || loadingData}
+                style={
+                  consolidating || loadingData
+                    ? { ...styles.exportBtn, opacity: 0.5, cursor: "not-allowed",
+                        color: "var(--color-accent)", borderColor: "var(--color-accent)" }
+                    : { ...styles.exportBtn, color: "var(--color-accent)",
+                        borderColor: "var(--color-accent)" }
+                }
+                title="Run memory consolidation now (normally runs at 3 AM)"
+              >
+                {consolidating ? "Consolidating…" : "⚡ Consolidate Now"}
+              </button>
+              <button
+                onClick={handleExport}
+                disabled={exporting || loadingData}
+                style={
+                  exporting || loadingData
+                    ? { ...styles.exportBtn, opacity: 0.5, cursor: "not-allowed" }
+                    : styles.exportBtn
+                }
+              >
+                {exporting ? "Exporting…" : "↓ Export JSON"}
+              </button>
+            </div>
           </div>
+
+          {/* ── Consolidation result banner ──────────────────────────── */}
+          {consolidationResult && !consolidationResult.error && (
+            <div style={styles.consolidationBanner}>
+              <span style={{ color: "var(--color-accent)", fontWeight: "var(--fw-bold)" }}>
+                ⚡ Consolidation complete
+              </span>
+              <span style={{ color: "var(--color-text-secondary)", fontSize: "var(--fs-sm)" }}>
+                {consolidationResult.episodes_processed ?? 0} episodes processed ·{" "}
+                {consolidationResult.facts_written ?? 0} facts written ·{" "}
+                {consolidationResult.conflicts_detected ?? 0} conflicts detected
+              </span>
+            </div>
+          )}
+          {consolidationResult?.error && (
+            <div style={{ ...styles.consolidationBanner, borderColor: "var(--color-error)",
+                          background: "rgba(248,113,113,0.06)" }}>
+              <span style={{ color: "var(--color-error)" }}>{consolidationResult.error}</span>
+            </div>
+          )}
 
           {/* ── Loading state ─────────────────────────────────────────── */}
           {loadingData && (
@@ -305,6 +363,17 @@ const styles = {
     color: "var(--color-text-secondary)",
     lineHeight: "1.6",
     margin: "var(--sp-2) 0 0",
+  },
+
+  consolidationBanner: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--sp-4)",
+    padding: "var(--sp-3) var(--sp-4)",
+    background: "var(--color-accent-subtle)",
+    border: "1px solid rgba(126, 232, 162, 0.25)",
+    borderRadius: "var(--radius-sm)",
+    flexWrap: "wrap",
   },
 
   exportBtn: {

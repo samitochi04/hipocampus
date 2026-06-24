@@ -20,9 +20,9 @@ Sub-router prefix layout after mounting at /api/v1:
 Used by: app/main.py exclusively.
 """
 
-from fastapi import APIRouter # type: ignore
+from fastapi import APIRouter
 
-from app.api.v1 import auth, chat, health, memory
+from app.api.v1 import admin, auth, chat, health, memory
 
 # The prefix here is intentionally empty — each sub-router carries its own
 # prefix (/auth, /chat, /memory). The /health router has no prefix because
@@ -33,3 +33,4 @@ v1_router.include_router(auth.router)
 v1_router.include_router(chat.router)
 v1_router.include_router(memory.router)
 v1_router.include_router(health.router)
+v1_router.include_router(admin.router)
