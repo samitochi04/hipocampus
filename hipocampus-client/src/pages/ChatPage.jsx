@@ -1,51 +1,109 @@
 /**
  * src/pages/ChatPage.jsx
  *
- * The main chat interface rendered at /chat (protected route).
- * Composes Header, ChatWindow, and ChatInput into a full-viewport layout.
- * Also renders inline banners for memory conflicts (409) and general errors.
+ * The main chat interface. Renders at both /chat and /chat/:chatId.
  *
  * Layout:
- *   Fixed header (--header-height, 56px)
- *   Scrollable chat window (fills remaining height)
- *   Optional conflict / error banner (above input, inline)
- *   Fixed input area (--input-area-height, 80px)
+ *   Fixed header (full width)
+ *   Body row below header:
+ *     ├── ChatSidebar (collapsible, shows conversation list)
+ *     └── Chat column (flex: 1)
+ *           ├── ChatWindow (scrollable, fills remaining height)
+ *           ├── ConflictBanner (conditional, above input)
+ *           ├── ErrorBanner    (conditional, above input)
+ *           └── ChatInput (fixed at bottom of column)
  *
- * All state and send logic lives in useChat() — this page is a pure composer.
+ * Route variants:
+ *   /chat           — no active chat; first send auto-creates one and
+ *                     navigates to /chat/:chatId via onChatCreated.
+ *   /chat/:chatId   — loads the permanent message archive for that chat.
  *
- * Used by: src/App.jsx (protected route, /chat).
+ * Used by: src/App.jsx (both routes).
  */
 
-import { useNavigate } from "react-router-dom";
+import { useCallback, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import Header from "../components/layout/Header.jsx";
 import ChatWindow from "../components/chat/ChatWindow.jsx";
 import ChatInput from "../components/chat/ChatInput.jsx";
+import ChatSidebar from "../components/chat/ChatSidebar.jsx";
 import { useChat } from "../hooks/useChat.js";
 
-/**
- * ChatPage
- * Renders the full chat UI.
- *
- * Parameters: none — all data comes from useChat() and useAuth() (via Header).
- * Returns: JSX.Element.
- * Used by: src/App.jsx.
- */
 export default function ChatPage() {
-  const { messages, loading, conflict, error, send, dismissConflict, dismissError } =
-    useChat();
-  const navigate = useNavigate();
+  const { chatId }  = useParams();           // undefined on /chat
+  const navigate    = useNavigate();
+  const [collapsed, setCollapsed] = useState(false);
+
+  /**
+   * handleChatCreated
+   * Called by useChat after the first turn of a new conversation.
+   * Navigates to /chat/:chatId so the URL reflects the active chat and the
+   * browser back button works correctly. replace:true removes the bare /chat
+   * entry from the history stack since it no longer represents a distinct page.
+   */
+  const handleChatCreated = useCallback((newChatId) => {
+    navigate(`/chat/${newChatId}`, { replace: true });
+  }, [navigate]);
+
+  const {
+    messages,
+    historyLoading,
+    loading,
+    conflict,
+    error,
+    send,
+    dismissConflict,
+    dismissError,
+  } = useChat({
+    chatId:        chatId ?? null,
+    onChatCreated: handleChatCreated,
+  });
+
+  /**
+   * handleChatSelect
+   * Called by ChatSidebar when the user clicks a conversation.
+   * Simply navigates — useChat reacts to the chatId change via useEffect.
+   */
+  function handleChatSelect(chat) {
+    navigate(`/chat/${chat.id}`);
+  }
+
+  /**
+   * handleNewChat
+   * Called by ChatSidebar after POST /chats succeeds.
+   * Navigates to the new chat URL; useChat loads an empty archive.
+   */
+  function handleNewChat(chat) {
+    navigate(`/chat/${chat.id}`);
+  }
 
   return (
     <div style={styles.page}>
-      {/* ── Fixed header ──────────────────────────────────────────────────── */}
+      {/* ── Fixed header ─────────────────────────────────────────────── */}
       <Header />
 
-      {/* ── Scrollable chat area ──────────────────────────────────────────── */}
-      <main style={styles.main}>
-        <div style={styles.chatColumn}>
-          <ChatWindow messages={messages} loading={loading} />
+      {/* ── Body row (sidebar + chat column) ─────────────────────────── */}
+      <div style={styles.body}>
 
-          {/* ── Conflict banner ─────────────────────────────────────────── */}
+        {/* Sidebar */}
+        <ChatSidebar
+          activeChatId={chatId ?? null}
+          onChatSelect={handleChatSelect}
+          onNewChat={handleNewChat}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed((c) => !c)}
+        />
+
+        {/* Chat column */}
+        <div style={styles.chatColumn}>
+
+          {/* Scrollable message list */}
+          <ChatWindow
+            messages={messages}
+            loading={loading || historyLoading}
+          />
+
+          {/* Conflict banner (409) */}
           {conflict && (
             <ConflictBanner
               detail={conflict.detail}
@@ -57,15 +115,15 @@ export default function ChatPage() {
             />
           )}
 
-          {/* ── Error banner ────────────────────────────────────────────── */}
+          {/* Generic error banner */}
           {error && !conflict && (
             <ErrorBanner message={error} onDismiss={dismissError} />
           )}
 
-          {/* ── Input area ──────────────────────────────────────────────── */}
+          {/* Message input */}
           <ChatInput onSend={send} loading={loading} />
         </div>
-      </main>
+      </div>
     </div>
   );
 }
@@ -74,20 +132,6 @@ export default function ChatPage() {
 // Internal: ConflictBanner
 // ---------------------------------------------------------------------------
 
-/**
- * ConflictBanner
- * Shown when the backend returns 409 — the user's message contradicted a
- * stored high-confidence preference. Explains what happened and offers two
- * actions: dismiss (retry the message) or navigate to /memory to resolve.
- *
- * Parameters:
- *   detail       (string)   — the conflict detail from the ApiError message.
- *   onDismiss    (function) — clears the conflict state so the user can retry.
- *   onGoToMemory (function) — navigates to /memory to resolve the conflict.
- *
- * Returns: JSX.Element.
- * Used by: ChatPage.
- */
 function ConflictBanner({ detail, onDismiss, onGoToMemory }) {
   return (
     <div style={bannerStyles.conflict} role="alert">
@@ -114,18 +158,6 @@ function ConflictBanner({ detail, onDismiss, onGoToMemory }) {
 // Internal: ErrorBanner
 // ---------------------------------------------------------------------------
 
-/**
- * ErrorBanner
- * Shown for non-conflict errors (e.g. 503 Qwen unavailable, network error).
- * Displays the error message and a dismiss button.
- *
- * Parameters:
- *   message   (string)   — the error message string from the ApiError.
- *   onDismiss (function) — clears the error state.
- *
- * Returns: JSX.Element.
- * Used by: ChatPage.
- */
 function ErrorBanner({ message, onDismiss }) {
   return (
     <div style={bannerStyles.error} role="alert">
@@ -153,21 +185,23 @@ const styles = {
     background: "var(--color-bg-base)",
   },
 
-  main: {
-    flex: 1,
-    overflow: "hidden",
-    marginTop: "var(--header-height)",
+  // Full-height row below the fixed header.
+  body: {
     display: "flex",
-    justifyContent: "center",
+    flexDirection: "row",
+    flex: 1,
+    marginTop: "var(--header-height)",
+    height: "calc(100vh - var(--header-height))",
+    overflow: "hidden",
   },
 
+  // Right-hand chat area: takes remaining width, stacks vertically.
   chatColumn: {
-    width: "100%",
-    maxWidth: "var(--chat-max-width)",
+    flex: 1,
     display: "flex",
     flexDirection: "column",
-    height: "100%",
     overflow: "hidden",
+    minWidth: 0, // Prevent flex child overflow on narrow screens.
   },
 };
 
@@ -181,8 +215,8 @@ const bannerStyles = {
     display: "flex",
     flexDirection: "column",
     gap: "var(--sp-3)",
+    flexShrink: 0,
   },
-
   error: {
     margin: "0 var(--sp-4)",
     padding: "var(--sp-3) var(--sp-4)",
@@ -193,50 +227,19 @@ const bannerStyles = {
     alignItems: "center",
     justifyContent: "space-between",
     gap: "var(--sp-4)",
+    flexShrink: 0,
   },
-
   content: {
     display: "flex",
     alignItems: "flex-start",
     gap: "var(--sp-3)",
   },
-
-  conflictIcon: {
-    fontSize: "var(--fs-md)",
-    flexShrink: 0,
-  },
-
-  errorIcon: {
-    fontSize: "var(--fs-sm)",
-    color: "var(--color-error)",
-    flexShrink: 0,
-  },
-
-  text: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--sp-1)",
-  },
-
-  title: {
-    fontSize: "var(--fs-sm)",
-    fontWeight: "var(--fw-bold)",
-    color: "var(--color-text-primary)",
-  },
-
-  detail: {
-    fontSize: "var(--fs-sm)",
-    color: "var(--color-text-secondary)",
-    lineHeight: "1.5",
-    margin: 0,
-  },
-
-  actions: {
-    display: "flex",
-    gap: "var(--sp-3)",
-    alignItems: "center",
-  },
-
+  conflictIcon: { fontSize: "var(--fs-md)", flexShrink: 0 },
+  errorIcon:    { fontSize: "var(--fs-sm)", color: "var(--color-error)", flexShrink: 0 },
+  text:  { display: "flex", flexDirection: "column", gap: "var(--sp-1)" },
+  title: { fontSize: "var(--fs-sm)", fontWeight: "var(--fw-bold)", color: "var(--color-text-primary)" },
+  detail: { fontSize: "var(--fs-sm)", color: "var(--color-text-secondary)", lineHeight: "1.5", margin: 0 },
+  actions: { display: "flex", gap: "var(--sp-3)", alignItems: "center" },
   primaryAction: {
     padding: "var(--sp-1) var(--sp-3)",
     background: "var(--color-accent)",
@@ -248,7 +251,6 @@ const bannerStyles = {
     cursor: "pointer",
     fontFamily: "var(--font-body)",
   },
-
   dismissAction: {
     padding: "var(--sp-1) var(--sp-3)",
     background: "transparent",

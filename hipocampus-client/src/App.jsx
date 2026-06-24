@@ -6,12 +6,13 @@
  * authenticated routes without repeating the guard on every page.
  *
  * Route map:
- *   /              → redirect to /register (entry point for new users)
+ *   /              → redirect to /register
  *   /register      → RegisterPage   (public)
  *   /login         → LoginPage      (public)
- *   /chat          → ChatPage       (protected — requires valid session)
- *   /memory        → MemoryPage     (protected — requires valid session)
- *   *              → redirect to /register (catch-all for unknown paths)
+ *   /chat          → ChatPage       (protected — new / unidentified chat)
+ *   /chat/:chatId  → ChatPage       (protected — loads existing chat archive)
+ *   /memory        → MemoryPage     (protected)
+ *   *              → redirect to /register
  *
  * Used by: src/main.jsx.
  */
@@ -54,8 +55,9 @@ export default function App() {
         All children inherit this guard automatically.
       */}
       <Route element={<ProtectedRoute />}>
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/memory" element={<MemoryPage />} />
+        <Route path="/chat"          element={<ChatPage />} />
+        <Route path="/chat/:chatId"  element={<ChatPage />} />
+        <Route path="/memory"        element={<MemoryPage />} />
       </Route>
 
       {/* ── Catch-all ─────────────────────────────────────────────────── */}

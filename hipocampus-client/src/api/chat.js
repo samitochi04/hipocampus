@@ -50,8 +50,11 @@ import { get, post } from "./client.js";
  *
  * Used by: src/hooks/useChat.js → send().
  */
-export function sendMessage(message) {
-  return post("/api/v1/chat", { message });
+export function sendMessage(message, sessionId = null) {
+  return post("/api/v1/chat", {
+    message,
+    ...(sessionId ? { session_id: sessionId } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------

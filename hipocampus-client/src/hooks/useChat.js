@@ -1,17 +1,20 @@
 /**
  * src/hooks/useChat.js
  *
- * Encapsulates all state and logic for the chat conversation.
- * ChatPage renders nothing except what this hook provides — no fetch calls,
- * no state management, no error handling live in the page itself.
+ * Multi-chat-aware hook. Manages all state for one conversation thread.
  *
- * State managed:
- *   messages    — ordered array of { role, content } objects for the chat window.
- *   loading     — true while a sendMessage() request is in flight.
- *   conflict    — { detail: string } when the backend returns 409 (memory conflict),
- *                 null otherwise. Triggers the conflict banner in ChatPage.
- *   error       — string error message for non-conflict failures, null otherwise.
- *   sessionId   — the current Redis session ID, used for display/debug.
+ * Works in two modes determined by the chatId prop:
+ *
+ *   Existing chat (/chat/:chatId)
+ *     On mount / chatId change: calls getChatMessages(chatId) to load the
+ *     full permanent archive (no TTL). The session_id is read from the
+ *     response and attached to every subsequent send.
+ *
+ *   New / unidentified chat (/chat with no chatId)
+ *     On mount: calls getHistory() to restore the Redis buffer if still warm.
+ *     The first send returns chat_id + session_id from the backend; the hook
+ *     stores session_id internally and calls onChatCreated(chatId, sessionId)
+ *     so ChatPage can navigate to /chat/:chatId.
  *
  * Used by: src/pages/ChatPage.jsx exclusively.
  */
@@ -19,143 +22,142 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client.js";
 import { getHistory, sendMessage as apiSendMessage } from "../api/chat.js";
-
-// ---------------------------------------------------------------------------
-// Hook
-// ---------------------------------------------------------------------------
+import { getChatMessages } from "../api/chats.js";
 
 /**
  * useChat
- * Initializes the chat session: loads history from the Redis buffer on mount,
- * and exposes a send() function the ChatInput component calls.
  *
- * Parameters: none.
+ * Parameters (object):
+ *   chatId        (string | null) — UUID of the open chat. Null for new chats.
+ *   onChatCreated (function)      — called with (chatId, sessionId) the first time
+ *                                   a new chat turn succeeds. ChatPage uses this to
+ *                                   navigate to /chat/:chatId.
  *
  * Returns:
  *   {
- *     messages:       Array<{ role: string, content: string }>,
- *     loading:        boolean,
- *     conflict:       { detail: string } | null,
- *     error:          string | null,
- *     sessionId:      string | null,
- *     send:           (message: string) => Promise<void>,
- *     dismissConflict:() => void,
- *     dismissError:   () => void,
+ *     messages:        Array<{ role, content }>,
+ *     historyLoading:  boolean — true while the archive / buffer is loading
+ *     loading:         boolean — true while a send() request is in flight,
+ *     conflict:        { detail: string } | null,
+ *     error:           string | null,
+ *     sessionId:       string | null,
+ *     send:            (message: string) => Promise<void>,
+ *     dismissConflict: () => void,
+ *     dismissError:    () => void,
  *   }
  *
  * Used by: src/pages/ChatPage.jsx.
  */
-export function useChat() {
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [conflict, setConflict] = useState(null);
-  const [error, setError] = useState(null);
-  const [sessionId, setSessionId] = useState(null);
+export function useChat({ chatId = null, onChatCreated } = {}) {
+  const [messages, setMessages]           = useState([]);
+  const [historyLoading, setHistLoading]  = useState(false);
+  const [loading, setLoading]             = useState(false);
+  const [conflict, setConflict]           = useState(null);
+  const [error, setError]                 = useState(null);
 
   /**
-   * historyLoaded ref
-   * Prevents the history fetch from running twice in React 18 StrictMode
-   * (which mounts effects twice in development). Once history is loaded,
-   * this ref stays true for the lifetime of the component.
+   * sessionId is internal: populated from the loaded archive (existing chat)
+   * or from the first send response (new chat). The send() function captures
+   * it via ref so it always uses the latest value without re-creating.
    */
-  const historyLoaded = useRef(false);
+  const [sessionId, setSessionId]         = useState(null);
+  const sessionIdRef                      = useRef(null);
 
-  // ── Load history on mount ─────────────────────────────────────────────────
+  // Keep ref in sync with state so the send callback is always current.
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
-  /**
-   * loadHistory
-   * Fetches the Redis working-memory buffer on mount and populates the
-   * message list so the user sees their recent conversation after a page
-   * refresh. If the buffer has expired (TTL exceeded) or is empty, the
-   * messages array stays empty — a fresh session.
-   *
-   * Parameters: none.
-   * Returns: void (sets messages state as side-effect).
-   * Used by: useEffect below (mount only).
-   */
-  const loadHistory = useCallback(async () => {
-    if (historyLoaded.current) return;
-    historyLoaded.current = true;
+  // Store onChatCreated in a ref to avoid it being a dependency of send().
+  const onChatCreatedRef = useRef(onChatCreated);
+  useEffect(() => { onChatCreatedRef.current = onChatCreated; }, [onChatCreated]);
 
-    try {
-      const data = await getHistory();
-      if (data?.messages?.length) {
-        setMessages(data.messages);
-      }
-      if (data?.session_id) {
-        setSessionId(data.session_id);
-      }
-    } catch {
-      // History load failure is non-fatal — the chat window just starts empty.
-      // We deliberately don't set the error state here to avoid showing an
-      // error banner on a fresh session where no history exists.
-    }
-  }, []);
+  // ── Load history whenever chatId changes ───────────────────────────────
 
   useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
+    let cancelled = false;
 
-  // ── Send a message ────────────────────────────────────────────────────────
+    async function load() {
+      setHistLoading(true);
+      setMessages([]);
+      setConflict(null);
+      setError(null);
+      setSessionId(null);
+
+      try {
+        if (chatId) {
+          // Existing chat → load permanent archive from PostgreSQL.
+          const data = await getChatMessages(chatId);
+          if (cancelled) return;
+          setMessages(
+            (data.messages ?? []).map((m) => ({ role: m.role, content: m.content }))
+          );
+          if (data.session_id) setSessionId(data.session_id);
+        } else {
+          // No chatId → try to restore the Redis buffer (warm session).
+          const data = await getHistory();
+          if (cancelled) return;
+          if (data?.messages?.length) setMessages(data.messages);
+          if (data?.session_id)       setSessionId(data.session_id);
+        }
+      } catch {
+        // History load failure is non-fatal; chat starts empty.
+      } finally {
+        if (!cancelled) setHistLoading(false);
+      }
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, [chatId]);
+
+  // ── Send a message ─────────────────────────────────────────────────────
 
   /**
    * send
-   * Sends the user's message to the backend, optimistically appends it to
-   * the message list, and appends the AI response when it arrives.
+   * Sends the user's message to the backend and handles the response.
    *
-   * Optimistic update strategy:
-   *   The user message is added to messages immediately (before the request
-   *   completes) so the UI feels instant. If the request fails, the message
-   *   stays in the list with the error shown below it — consistent with how
-   *   chat apps handle send failures.
+   * Optimistic: the user message is appended immediately; on failure it is
+   * either left visible (generic error) or removed (conflict — user must
+   * resolve before retrying).
    *
-   * Conflict handling:
-   *   A 409 response means the message contradicts a stored high-confidence
-   *   preference. The conflict detail is stored in state and the ChatPage
-   *   renders a ConflictBanner. The message is NOT added to the list when a
-   *   conflict occurs — the user must resolve the conflict first.
+   * On the first turn of a new chat, the backend auto-creates the Chat row
+   * and returns chat_id + session_id. We store session_id and call the
+   * onChatCreated callback so ChatPage can navigate to /chat/:chatId.
    *
    * Parameters:
-   *   message (string) — the raw text the user typed. Must be non-empty;
-   *                      ChatInput enforces this before calling send().
+   *   message (string) — validated non-empty text from ChatInput.
    *
    * Returns: Promise<void> — all outcomes handled via state.
-   *
    * Used by: src/components/chat/ChatInput.jsx → handleSend().
    */
   const send = useCallback(async (message) => {
     if (!message.trim() || loading) return;
 
-    // Clear previous conflict / error before each new send.
     setConflict(null);
     setError(null);
-
-    // Optimistically add the user message.
-    const userMessage = { role: "user", content: message };
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => [...prev, { role: "user", content: message }]);
     setLoading(true);
 
     try {
-      const data = await apiSendMessage(message);
+      const data = await apiSendMessage(message, sessionIdRef.current);
 
-      // Append the AI response.
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: data.response },
       ]);
 
-      if (data.session_id) {
-        setSessionId(data.session_id);
+      // Update session_id from the response (populated on first turn).
+      if (data.session_id) setSessionId(data.session_id);
+
+      // First turn of a brand-new chat → notify ChatPage to navigate.
+      if (!chatId && data.chat_id) {
+        onChatCreatedRef.current?.(data.chat_id, data.session_id);
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        // Memory conflict — remove the optimistic user message and show the
-        // conflict banner so the user can resolve it before retrying.
+        // Conflict: remove optimistic message, show resolution banner.
         setMessages((prev) => prev.slice(0, -1));
         setConflict({ detail: err.message });
       } else {
-        // Any other error — keep the user message visible and show an
-        // inline error so they know their message wasn't processed.
         setError(
           err instanceof ApiError
             ? err.message
@@ -165,35 +167,16 @@ export function useChat() {
     } finally {
       setLoading(false);
     }
-  }, [loading]);
+  }, [loading, chatId]); // sessionId accessed via ref — not a dep
 
-  // ── Dismiss handlers ──────────────────────────────────────────────────────
+  // ── Dismiss handlers ───────────────────────────────────────────────────
 
-  /**
-   * dismissConflict
-   * Clears the conflict banner state.
-   * Called when the user clicks "Dismiss" or navigates to resolve the conflict
-   * on the Memory page.
-   *
-   * Parameters: none.
-   * Returns: void.
-   * Used by: src/pages/ChatPage.jsx → conflict banner dismiss button.
-   */
   const dismissConflict = useCallback(() => setConflict(null), []);
-
-  /**
-   * dismissError
-   * Clears the error state.
-   * Called when the user clicks "Dismiss" on the error banner.
-   *
-   * Parameters: none.
-   * Returns: void.
-   * Used by: src/pages/ChatPage.jsx → error banner dismiss button.
-   */
-  const dismissError = useCallback(() => setError(null), []);
+  const dismissError    = useCallback(() => setError(null), []);
 
   return {
     messages,
+    historyLoading,
     loading,
     conflict,
     error,
