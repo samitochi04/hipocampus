@@ -1,319 +1,147 @@
 """
-app/api/v1/chats.py
+app/api/v1/chat.py
 
-Chat management route handlers. Four endpoints:
+Chat route handlers. Two endpoints:
+  POST /chat         — the main turn endpoint, delegates to chat_service.process_turn()
+  GET  /chat/history — returns the current Redis working-memory buffer for the session
 
-  POST  /chats                  — create a new chat, return ChatOut with a
-                                  fresh session_id the client uses for all
-                                  subsequent turns in that conversation.
-  GET   /chats                  — list the current user's chats newest-first,
-                                  with message counts for the sidebar.
-  GET   /chats/{id}/messages    — permanent full-history archive for one chat.
-                                  This is what lets a user retrieve code from
-                                  two days ago without asking the AI again.
-  PATCH /chats/{id}             — rename a chat title manually.
+Both routes require authentication via Depends(get_current_user).
+No business logic lives here — the handlers validate input, delegate,
+and format the response.
 
-Design notes:
-  - session_id is generated here (POST /chats) and owned by the client
-    from that point on. The client sends it with every POST /api/v1/chat
-    turn so the service knows which Chat row to write messages to.
-  - All four endpoints are ownership-gated: a user can only see and modify
-    their own chats. 404 (not 403) is returned for cross-user access to
-    avoid leaking whether a chat_id exists.
-  - No business logic lives here — handlers are thin wrappers over DB queries.
-
-Used by: app/api/v1/router.py (mounted under /chats).
+Used by: app/api/v1/router.py, which mounts this router under /chat.
 """
 
 import logging
-import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, status # type: ignore
+from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 
 from app.core.db import get_db
-from app.dependencies import get_current_user
-from app.models.chat import Chat, Message
+from app.core.exceptions import MemoryConflictError
+from app.dependencies import get_current_user, get_redis
 from app.schemas.auth import UserOut
-from app.schemas.chat import ChatListItem, ChatMessagesResponse, ChatOut, MessageOut
+from app.schemas.chat import (
+    ChatHistoryMessage,
+    ChatHistoryResponse,
+    ChatRequest,
+    ChatResponse,
+)
+from app.services.chat_service import process_turn
+from app.services.memory_engine.qwen_router import QwenAPIError
+from app.services.memory_engine.redis_buffer import get_buffer
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/chats", tags=["chats"])
-
-
-# ---------------------------------------------------------------------------
-# Request body for PATCH /chats/{id}
-# ---------------------------------------------------------------------------
-
-
-class RenameChatRequest(BaseModel):
-    """
-    Body for PATCH /chats/{id}.
-
-    Parameters:
-        title (str) — new title, 1–256 characters.
-
-    Used by: rename_chat()
-    """
-
-    title: str = Field(..., min_length=1, max_length=256)
-
-
-# ---------------------------------------------------------------------------
-# POST /chats
-# ---------------------------------------------------------------------------
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post(
     "",
-    response_model=ChatOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a new chat",
+    response_model=ChatResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Send a message",
+    description=(
+        "Processes one chat turn through the full memory pipeline: "
+        "retrieves multi-tier context, assembles the prompt, calls Qwen-Max, "
+        "scores and stores the episode, and returns the model's response. "
+        "Returns 409 if the message contradicts a stored high-confidence preference."
+    ),
 )
-async def create_chat(
+async def chat(
+    body: ChatRequest,
     current_user: UserOut = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> ChatOut:
+) -> ChatResponse:
     """
-    Creates a new Chat row with a server-generated session_id and returns it.
-
-    The client must store the returned session_id and send it with every
-    POST /api/v1/chat turn that belongs to this conversation. Omitting
-    session_id in a chat turn automatically creates a new chat, so this
-    endpoint only needs to be called explicitly when the user clicks
-    "New Chat" before sending any messages.
+    Main chat turn endpoint. Delegates entirely to chat_service.process_turn().
 
     Parameters:
-        current_user (UserOut)      — resolved by Depends(get_current_user).
-        db           (AsyncSession) — async DB session from Depends(get_db).
+        body         (ChatRequest) — validated request body containing the user message.
+        current_user (UserOut)     — injected by Depends(get_current_user); raises 401
+                                     automatically if the cookie is missing or expired.
+        db           (AsyncSession)— async DB session from Depends(get_db).
 
     Returns:
-        ChatOut — {id, session_id, title (None), created_at}
+        ChatResponse — {session_id, response, context_tokens_used, importance_score}
 
-    Used by: src/api/chats.js → createChat()
-             "New Chat" button in ChatSidebar
+    Raises (mapped to HTTP responses):
+        MemoryConflictError → 409 (handled by the exception handler in main.py,
+                                   the React client shows the conflict resolution UI)
+        QwenAPIError        → 503 (Qwen API unreachable or rate-limited)
+        SessionBufferError  → 503 (handled by the exception handler in main.py)
+
+    Used by: React ChatInput component → api/chat.js → sendMessage()
     """
-    # Generate a short, human-readable session_id.
-    # Format: chat-{8 hex chars} — unique enough for any single user's chats
-    # and short enough to fit in the Redis key without clutter.
-    raw = uuid.uuid4().hex
-    session_id = f"chat-{raw[:8]}-{raw[8:12]}"
-
-    new_chat = Chat(
-        user_id=current_user.id,
-        session_id=session_id,
-        title=None,  # Populated by the background title-generation task after first turn.
-    )
-    db.add(new_chat)
-    await db.flush()   # Get the DB-generated id before commit.
-    await db.commit()
-    await db.refresh(new_chat)
-
-    logger.info(
-        "Created chat %s (session=%s) for user %s",
-        new_chat.id, session_id, current_user.id,
-    )
-    return ChatOut.model_validate(new_chat)
-
-
-# ---------------------------------------------------------------------------
-# GET /chats
-# ---------------------------------------------------------------------------
+    try:
+        return await process_turn(
+            user_message=body.message,
+            current_user=current_user,
+            db=db,
+        )
+    except MemoryConflictError:
+        # Re-raise so the registered exception handler in main.py formats
+        # the 409 response with the conflict detail and "type" field.
+        raise
+    except QwenAPIError as exc:
+        logger.error("Qwen API error during chat turn for user %s: %s", current_user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The AI service is temporarily unavailable. Please try again in a moment.",
+        )
+    except Exception as exc:
+        logger.error("Unexpected error in chat turn for user %s: %s", current_user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred. Please try again.",
+        )
 
 
 @router.get(
-    "",
-    response_model=list[ChatListItem],
+    "/history",
+    response_model=ChatHistoryResponse,
     status_code=status.HTTP_200_OK,
-    summary="List the current user's chats",
+    summary="Get current session history",
+    description=(
+        "Returns the contents of the Redis working-memory buffer for the "
+        "user's current session — up to the last 10 messages (5 full turns). "
+        "Returns an empty message list if the session has expired or no messages "
+        "have been sent yet."
+    ),
 )
-async def list_chats(
+async def get_history(
     current_user: UserOut = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> list[ChatListItem]:
+) -> ChatHistoryResponse:
     """
-    Returns all chats owned by the current user, ordered by most-recently-
-    messaged first. Includes a message_count and last_message_at for each
-    chat so the sidebar can show "3 messages · 2 days ago" without a
-    separate request.
-
-    Empty chats (created but no messages sent yet) appear with
-    message_count=0 and last_message_at=None, ordered by created_at.
+    Session history endpoint. Reads directly from the Redis buffer without
+    touching PostgreSQL, so it is always fast regardless of episode count.
 
     Parameters:
-        current_user (UserOut)      — resolved by Depends(get_current_user).
-        db           (AsyncSession) — async DB session from Depends(get_db).
+        current_user (UserOut) — injected by Depends(get_current_user).
 
     Returns:
-        list[ChatListItem] — sorted newest-first.
+        ChatHistoryResponse — {session_id, messages: [{role, content}, ...]}
+                              Messages are ordered oldest → newest.
 
-    Used by: src/api/chats.js → listChats()
-             ChatSidebar on mount and after a new chat is created.
+    Used by: React ChatWindow component on mount to restore visible history
+             after a page refresh (the buffer survives within its 1h TTL).
     """
-    # Subquery: per-chat message count and last message timestamp.
-    # LEFT JOIN so chats with no messages are still returned.
-    msg_stats = (
-        select(
-            Message.chat_id.label("chat_id"),
-            func.count(Message.id).label("message_count"),
-            func.max(Message.created_at).label("last_message_at"),
-        )
-        .group_by(Message.chat_id)
-        .subquery()
+    from app.services.chat_service import _get_or_create_session_id
+
+    user_id = str(current_user.id)
+    session_id = _get_or_create_session_id(user_id)
+    redis = get_redis()
+
+    raw_messages = await get_buffer(
+        redis=redis,
+        user_id=user_id,
+        session_id=session_id,
     )
 
-    result = await db.execute(
-        select(
-            Chat,
-            func.coalesce(msg_stats.c.message_count, 0).label("message_count"),
-            msg_stats.c.last_message_at.label("last_message_at"),
-        )
-        .outerjoin(msg_stats, Chat.id == msg_stats.c.chat_id)
-        .where(Chat.user_id == current_user.id)
-        # Most recently active chats first; fall back to created_at for empty chats.
-        .order_by(
-            func.coalesce(msg_stats.c.last_message_at, Chat.created_at).desc()
-        )
-    )
-
-    rows = result.all()
-
-    return [
-        ChatListItem(
-            id=row.Chat.id,
-            session_id=row.Chat.session_id,
-            title=row.Chat.title,
-            created_at=row.Chat.created_at,
-            message_count=row.message_count,
-            last_message_at=row.last_message_at,
-        )
-        for row in rows
+    messages = [
+        ChatHistoryMessage(role=m["role"], content=m["content"])
+        for m in raw_messages
+        if "role" in m and "content" in m
     ]
 
-
-# ---------------------------------------------------------------------------
-# GET /chats/{id}/messages
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/{chat_id}/messages",
-    response_model=ChatMessagesResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Get the full message archive for a chat",
-)
-async def get_chat_messages(
-    chat_id: uuid.UUID,
-    current_user: UserOut = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> ChatMessagesResponse:
-    """
-    Returns every message ever sent in this chat, oldest first.
-
-    This is the permanent archive that lets a user read back a conversation
-    from two days ago, copy code from an old response, or review a decision
-    — without asking the AI again (saving tokens and staying in context).
-
-    Unlike GET /api/v1/chat/history (which only returns the Redis buffer,
-    max 10 messages, 1-hour TTL), this endpoint queries PostgreSQL and
-    has no TTL — it returns the complete history.
-
-    Parameters:
-        chat_id      (UUID)         — path parameter identifying the chat.
-        current_user (UserOut)      — resolved by Depends(get_current_user).
-        db           (AsyncSession) — async DB session from Depends(get_db).
-
-    Returns:
-        ChatMessagesResponse — {chat_id, session_id, title, messages[]}
-
-    Raises:
-        HTTPException 404 — chat not found or belongs to another user.
-                            Returns 404 (not 403) to avoid leaking whether
-                            the chat_id exists.
-
-    Used by: src/api/chats.js → getChatMessages()
-             ChatPage when loading an old conversation.
-    """
-    # Verify ownership before returning any data.
-    chat_result = await db.execute(
-        select(Chat).where(Chat.id == chat_id).where(Chat.user_id == current_user.id)
-    )
-    chat = chat_result.scalars().first()
-    if not chat:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chat not found.",
-        )
-
-    # Fetch all messages ordered oldest → newest.
-    msgs_result = await db.execute(
-        select(Message)
-        .where(Message.chat_id == chat_id)
-        .order_by(Message.created_at.asc())
-    )
-    messages = msgs_result.scalars().all()
-
-    return ChatMessagesResponse(
-        chat_id=chat.id,
-        session_id=chat.session_id,
-        title=chat.title,
-        messages=[MessageOut.model_validate(m) for m in messages],
-    )
-
-
-# ---------------------------------------------------------------------------
-# PATCH /chats/{id}
-# ---------------------------------------------------------------------------
-
-
-@router.patch(
-    "/{chat_id}",
-    response_model=ChatOut,
-    status_code=status.HTTP_200_OK,
-    summary="Rename a chat",
-)
-async def rename_chat(
-    chat_id: uuid.UUID,
-    body: RenameChatRequest,
-    current_user: UserOut = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> ChatOut:
-    """
-    Updates the title of a chat owned by the current user.
-    Called when the user edits a chat name in the sidebar, or to override
-    a Qwen-generated title they don't like.
-
-    Parameters:
-        chat_id      (UUID)              — path parameter identifying the chat.
-        body         (RenameChatRequest) — {title: str}
-        current_user (UserOut)           — resolved by Depends(get_current_user).
-        db           (AsyncSession)      — async DB session from Depends(get_db).
-
-    Returns:
-        ChatOut — the updated chat with the new title.
-
-    Raises:
-        HTTPException 404 — chat not found or belongs to another user.
-
-    Used by: src/api/chats.js → renameChat()
-             ChatSidebar double-click to rename.
-    """
-    chat_result = await db.execute(
-        select(Chat).where(Chat.id == chat_id).where(Chat.user_id == current_user.id)
-    )
-    chat = chat_result.scalars().first()
-    if not chat:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chat not found.",
-        )
-
-    chat.title = body.title
-    await db.commit()
-    await db.refresh(chat)
-
-    logger.info("Renamed chat %s → %r (user %s)", chat_id, body.title, current_user.id)
-    return ChatOut.model_validate(chat)
+    return ChatHistoryResponse(session_id=session_id, messages=messages)
