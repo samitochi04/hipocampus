@@ -25,7 +25,7 @@ Used by: app/main.py exclusively.
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, analyse, auth, chat, chats, generate, health, memory
+from app.api.v1 import admin, analyse, auth, chat, chats, generate, health, memory, upload
 
 v1_router = APIRouter()
 
@@ -37,3 +37,4 @@ v1_router.include_router(health.router)
 v1_router.include_router(admin.router)
 v1_router.include_router(analyse.router)
 v1_router.include_router(generate.router)
+v1_router.include_router(upload.router)

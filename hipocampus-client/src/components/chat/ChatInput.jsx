@@ -1,177 +1,293 @@
 /**
  * src/components/chat/ChatInput.jsx
  *
- * The message composition area fixed to the bottom of the chat page.
- * Renders an auto-growing textarea and a send button. Handles keyboard
- * shortcuts (Enter to send, Shift+Enter for a newline) and disables
- * all input while a message is in flight.
+ * Message composition area with document attachment support.
+ *
+ * Document upload flow:
+ *   1. User clicks the paperclip (📎) button → hidden <input type="file"> opens.
+ *   2. File is validated client-side (extension, double-extension, size).
+ *   3. Valid file is POSTed to /api/v1/upload — send button locks while
+ *      processing so the response is ready before the message goes out.
+ *   4. Attachment chip appears below the textarea showing filename + char count.
+ *   5. On send: document block is prepended to the message —
+ *        [DOCUMENT: file.pdf]
+ *        {extracted text}
+ *        ---
+ *        {user message}
+ *   6. Attachment is cleared after send. User can attach a new file.
+ *
+ * Send button is enabled when:
+ *   - Not loading a response AND
+ *   - Not processing an upload AND
+ *   - ( message is non-empty OR a processed attachment is ready )
  *
  * Used by: src/pages/ChatPage.jsx.
  */
 
 import { useRef, useState } from "react";
+import { ACCEPTED_FORMATS, uploadDocument, validateFile } from "../../api/upload.js";
 
-/** Maximum character count enforced client-side to match the backend schema. */
 const MAX_LENGTH = 8000;
+
+// ---------------------------------------------------------------------------
+// ChatInput
+// ---------------------------------------------------------------------------
 
 /**
  * ChatInput
- * Renders the message composition area.
  *
  * Parameters:
- *   onSend  (function) — called with the trimmed message string when the
- *                        user presses Enter or clicks Send.
- *                        Signature: onSend(message: string) => void.
- *                        The actual send logic lives in useChat.js — this
- *                        component only owns the text field state.
- *   loading (boolean)  — when true, the textarea and button are disabled
- *                        and the button shows "Waiting…".
+ *   onSend  (function) — called with the full message string (including any
+ *                        prepended document block). Signature: (msg: string) => void.
+ *   loading (boolean)  — true while an AI response is in flight.
  *
- * Returns: JSX.Element — a fixed-position input area.
+ * Returns: JSX.Element.
  * Used by: src/pages/ChatPage.jsx.
  */
 export default function ChatInput({ onSend, loading }) {
-  const [value, setValue] = useState("");
-  const textareaRef = useRef(null);
+  const [value,      setValue]      = useState("");
+  const [attachment, setAttachment] = useState(null);
+  // attachment = null
+  //   | { file, filename, status: "processing" }
+  //   | { file, filename, extractedText, charCount, format, status: "ready" }
+  //   | { file, filename, error, status: "error" }
 
-  /**
-   * handleSend
-   * Trims the current value, calls onSend if non-empty, and resets the field.
-   * Also resets the textarea height to its single-line default after sending.
-   *
-   * Parameters: none.
-   * Returns: void.
-   * Used by: the send button onClick and the Enter key handler below.
-   */
+  const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // ── Send ──────────────────────────────────────────────────────────────────
+
   function handleSend() {
     const trimmed = value.trim();
-    if (!trimmed || loading) return;
-    onSend(trimmed);
+    const hasAttachment = attachment?.status === "ready";
+    if ((!trimmed && !hasAttachment) || loading || attachment?.status === "processing") return;
+
+    let fullMessage;
+    if (hasAttachment) {
+      const docBlock = `[DOCUMENT: ${attachment.filename}]\n${attachment.extractedText}`;
+      fullMessage = trimmed ? `${docBlock}\n---\n${trimmed}` : docBlock;
+    } else {
+      fullMessage = trimmed;
+    }
+
+    onSend(fullMessage.trim());
     setValue("");
-    // Reset height after send so the textarea returns to one line.
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
+    setAttachment(null);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
   }
 
-  /**
-   * handleKeyDown
-   * Sends the message on Enter (without Shift). Shift+Enter inserts a newline
-   * as the user expects from multi-line editing tools.
-   *
-   * Parameters:
-   *   e (KeyboardEvent) — the keydown event from the textarea.
-   *
-   * Returns: void.
-   * Used by: the textarea's onKeyDown handler.
-   */
   function handleKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault(); // prevent the newline from being inserted
-      handleSend();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
-  /**
-   * handleChange
-   * Updates the value state and auto-grows the textarea height to fit the
-   * content. The textarea grows up to 160px then scrolls internally.
-   *
-   * Parameters:
-   *   e (ChangeEvent) — the change event from the textarea.
-   *
-   * Returns: void.
-   * Used by: the textarea's onChange handler.
-   */
   function handleChange(e) {
-    const newValue = e.target.value;
-    if (newValue.length > MAX_LENGTH) return; // hard cap
-    setValue(newValue);
-
-    // Auto-grow: reset to auto first so shrinking works correctly.
+    const v = e.target.value;
+    if (v.length > MAX_LENGTH) return;
+    setValue(v);
     const el = e.target;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }
 
-  const canSend = value.trim().length > 0 && !loading;
-  const charsLeft = MAX_LENGTH - value.length;
-  const nearLimit = charsLeft < 200;
+  // ── File handling ─────────────────────────────────────────────────────────
+
+  function handleAttachClick() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";   // reset so same file can be re-selected after error
+    if (!file) return;
+
+    // Client-side validation
+    const validation = validateFile(file);
+    if (!validation.valid) {
+      setAttachment({ file, filename: file.name, error: validation.error, status: "error" });
+      return;
+    }
+
+    // Start upload
+    setAttachment({ file, filename: file.name, status: "processing" });
+
+    try {
+      const result = await uploadDocument(file);
+      setAttachment({
+        file,
+        filename:      result.filename,
+        extractedText: result.extracted_text,
+        charCount:     result.char_count,
+        format:        result.format,
+        status:        "ready",
+      });
+    } catch (err) {
+      setAttachment({
+        file,
+        filename: file.name,
+        error:    err.message ?? "Upload failed. Please try again.",
+        status:   "error",
+      });
+    }
+  }
+
+  function clearAttachment() {
+    setAttachment(null);
+  }
+
+  // ── Derived state ─────────────────────────────────────────────────────────
+
+  const isProcessing = attachment?.status === "processing";
+  const canSend      = !loading
+    && !isProcessing
+    && (value.trim().length > 0 || attachment?.status === "ready");
+  const charsLeft    = MAX_LENGTH - value.length;
+  const nearLimit    = charsLeft < 200;
+  const acceptStr    = Object.keys(ACCEPTED_FORMATS).join(",");
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div style={styles.wrapper}>
-      <div style={styles.inputRow}>
-        {/* ── Textarea ──────────────────────────────────────────────────── */}
+    <div style={s.wrapper}>
+      {/* Attachment chip — shown when a file is selected */}
+      {attachment && (
+        <AttachmentChip
+          attachment={attachment}
+          onClear={clearAttachment}
+        />
+      )}
+
+      {/* Input row */}
+      <div style={s.inputRow}>
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={acceptStr}
+          onChange={handleFileChange}
+          style={{ display: "none" }}
+          aria-hidden="true"
+        />
+
+        {/* Attach button */}
+        <button
+          onClick={handleAttachClick}
+          disabled={loading || isProcessing}
+          style={
+            attachment?.status === "ready"
+              ? { ...s.attachBtn, ...s.attachBtnActive }
+              : s.attachBtn
+          }
+          aria-label="Attach document (PDF, CSV, or Markdown)"
+          title="Attach document (.pdf, .csv, .md · max 10 MB)"
+        >
+          📎
+        </button>
+
+        {/* Textarea */}
         <textarea
           ref={textareaRef}
           value={value}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder="Message Hipocampus…"
+          placeholder={attachment ? "Add a message (optional)…" : "Message Hipocampus…"}
           disabled={loading}
           rows={1}
-          style={loading ? { ...styles.textarea, opacity: 0.6 } : styles.textarea}
+          style={loading ? { ...s.textarea, opacity: 0.6 } : s.textarea}
           aria-label="Message input"
-          aria-describedby={nearLimit ? "char-count" : undefined}
         />
 
-        {/* ── Send button ────────────────────────────────────────────────── */}
+        {/* Send button */}
         <button
           onClick={handleSend}
           disabled={!canSend}
-          style={canSend ? styles.sendBtn : { ...styles.sendBtn, ...styles.sendBtnDisabled }}
+          style={canSend ? s.sendBtn : { ...s.sendBtn, ...s.sendBtnDisabled }}
           aria-label="Send message"
         >
           {loading ? (
-            // Spinner dot while loading
-            <span style={styles.sendSpinner} aria-hidden="true" />
+            <span style={s.sendSpinner} aria-hidden="true" />
           ) : (
-            // Arrow icon when ready
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M8 2L14 8L8 14M14 8H2"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 2L14 8L8 14M14 8H2" stroke="currentColor" strokeWidth="2"
+                strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           )}
         </button>
       </div>
 
-      {/* ── Footer: shortcut hint + character count ────────────────────── */}
-      <div style={styles.footer}>
-        <span style={styles.hint}>
-          Enter to send &nbsp;·&nbsp; Shift+Enter for newline
+      {/* Footer */}
+      <div style={s.footer}>
+        <span style={s.hint}>
+          Enter to send · Shift+Enter for newline
+          {" · "}
+          <span style={s.hintAccent}>📎 .pdf .csv .md</span>
         </span>
         {nearLimit && (
-          <span
-            id="char-count"
-            style={{
-              ...styles.charCount,
-              color: charsLeft < 50 ? "var(--color-error)" : "var(--color-warning)",
-            }}
-            aria-live="polite"
-          >
+          <span style={{ ...s.charCount,
+            color: charsLeft < 50 ? "var(--color-error)" : "var(--color-warning)" }}>
             {charsLeft} left
           </span>
         )}
       </div>
 
-      {/* Spinner keyframe — only used in the send button */}
       <style>{`
         @keyframes spinnerPulse {
           0%, 100% { opacity: 0.3; transform: scale(0.8); }
           50%       { opacity: 1;   transform: scale(1.1); }
         }
+        @keyframes attachSpin {
+          to { transform: rotate(360deg); }
+        }
       `}</style>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Internal: AttachmentChip
+// ---------------------------------------------------------------------------
+
+/**
+ * AttachmentChip
+ * Shows the attachment status above the input row.
+ *
+ *   processing → grey chip with spinning indicator, send locked
+ *   ready      → white chip with filename + char count, send unlocked
+ *   error      → red chip with error message, × to dismiss
+ */
+function AttachmentChip({ attachment, onClear }) {
+  const { filename, status, charCount, format, error } = attachment;
+
+  const chipStyle = {
+    ...s.chip,
+    ...(status === "ready"  ? s.chipReady  : {}),
+    ...(status === "error"  ? s.chipError  : {}),
+    ...(status === "processing" ? s.chipProcessing : {}),
+  };
+
+  return (
+    <div style={chipStyle}>
+      {/* Icon / spinner */}
+      {status === "processing" ? (
+        <span style={s.chipSpinner} aria-hidden="true" />
+      ) : status === "ready" ? (
+        <span aria-hidden="true">
+          {format === "pdf" ? "📄" : format === "csv" ? "📊" : "📝"}
+        </span>
+      ) : (
+        <span aria-hidden="true">⚠</span>
+      )}
+
+      {/* Label */}
+      <span style={s.chipLabel}>
+        {status === "processing" && `Processing ${filename}…`}
+        {status === "ready"      && `${filename} · ${charCount.toLocaleString()} chars`}
+        {status === "error"      && error}
+      </span>
+
+      {/* Dismiss */}
+      {status !== "processing" && (
+        <button onClick={onClear} style={s.chipClose} aria-label="Remove attachment">×</button>
+      )}
     </div>
   );
 }
@@ -180,7 +296,7 @@ export default function ChatInput({ onSend, loading }) {
 // Styles
 // ---------------------------------------------------------------------------
 
-const styles = {
+const s = {
   wrapper: {
     borderTop: "1px solid var(--color-border)",
     background: "var(--color-bg-surface)",
@@ -193,7 +309,26 @@ const styles = {
   inputRow: {
     display: "flex",
     alignItems: "flex-end",
-    gap: "var(--sp-3)",
+    gap: "var(--sp-2)",
+  },
+
+  attachBtn: {
+    flexShrink: 0,
+    width: "36px",
+    height: "44px",
+    background: "transparent",
+    border: "1px solid var(--color-border)",
+    borderRadius: "var(--radius-md)",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "1rem",
+    transition: "border-color var(--transition-fast)",
+  },
+  attachBtnActive: {
+    borderColor: "var(--color-accent)",
+    background: "var(--color-accent-subtle)",
   },
 
   textarea: {
@@ -212,7 +347,6 @@ const styles = {
     minHeight: "44px",
     maxHeight: "160px",
     overflowY: "auto",
-    // Prevent layout shift as the textarea grows
     boxSizing: "border-box",
   },
 
@@ -222,7 +356,7 @@ const styles = {
     height: "44px",
     borderRadius: "var(--radius-md)",
     background: "var(--color-accent)",
-    color: "#0D0F1A",
+    color: "#000000",
     border: "none",
     cursor: "pointer",
     display: "flex",
@@ -231,7 +365,6 @@ const styles = {
     transition: "background var(--transition-fast), box-shadow var(--transition-fast)",
     boxShadow: "var(--shadow-accent-glow)",
   },
-
   sendBtnDisabled: {
     background: "var(--color-bg-input)",
     color: "var(--color-text-placeholder)",
@@ -254,15 +387,72 @@ const styles = {
     alignItems: "center",
     minHeight: "16px",
   },
-
   hint: {
     fontSize: "var(--fs-xs)",
     color: "var(--color-text-placeholder)",
   },
-
+  hintAccent: {
+    color: "var(--color-text-secondary)",
+    fontWeight: "var(--fw-medium)",
+  },
   charCount: {
     fontSize: "var(--fs-xs)",
     fontWeight: "var(--fw-medium)",
     transition: "color var(--transition-fast)",
+  },
+
+  // ── Attachment chip ────────────────────────────────────────────────────
+  chip: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--sp-2)",
+    padding: "var(--sp-2) var(--sp-3)",
+    borderRadius: "var(--radius-sm)",
+    fontSize: "var(--fs-xs)",
+    border: "1px solid var(--color-border)",
+    background: "var(--color-bg-input)",
+    color: "var(--color-text-secondary)",
+  },
+  chipReady: {
+    background: "rgba(255,255,255,0.04)",
+    borderColor: "var(--color-accent)",
+    color: "var(--color-text-primary)",
+  },
+  chipProcessing: {
+    background: "rgba(255,255,255,0.02)",
+    borderColor: "var(--color-border)",
+    color: "var(--color-text-secondary)",
+  },
+  chipError: {
+    background: "rgba(248,113,113,0.06)",
+    borderColor: "rgba(248,113,113,0.3)",
+    color: "var(--color-error)",
+  },
+  chipSpinner: {
+    display: "inline-block",
+    width: "12px",
+    height: "12px",
+    borderRadius: "50%",
+    border: "2px solid var(--color-border)",
+    borderTopColor: "var(--color-text-secondary)",
+    animation: "attachSpin 0.7s linear infinite",
+    flexShrink: 0,
+  },
+  chipLabel: {
+    flex: 1,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  chipClose: {
+    background: "transparent",
+    border: "none",
+    color: "inherit",
+    fontSize: "1rem",
+    cursor: "pointer",
+    lineHeight: 1,
+    padding: "0 var(--sp-1)",
+    flexShrink: 0,
+    fontFamily: "var(--font-body)",
   },
 };
