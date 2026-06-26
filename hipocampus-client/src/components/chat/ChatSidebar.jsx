@@ -50,6 +50,7 @@ export default function ChatSidebar({
   onNewChat,
   collapsed = false,
   onToggle,
+  isMobile = false,
 }) {
   const [chats, setChats] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -112,8 +113,8 @@ export default function ChatSidebar({
       const newChat = await createChat();
       await loadChats();
       onNewChat(newChat);
+      if (isMobile) onToggle(); // close drawer after action
     } catch {
-      // Silently fail — the user can try again.
     } finally {
       setCreatingChat(false);
     }
@@ -185,15 +186,31 @@ export default function ChatSidebar({
 
   // ── Render ────────────────────────────────────────────────────────────
 
-  return (
-    <aside
-      style={{
+  // On mobile the sidebar is a fixed full-height drawer that slides in from
+  // the left. `collapsed` means hidden (width 0). On desktop it's the normal
+  // inline collapsible rail (48px narrow / 248px expanded).
+  const sidebarStyle = isMobile
+    ? {
+        ...styles.sidebar,
+        position: "fixed",
+        top: 0,
+        left: 0,
+        height: "100vh",
+        zIndex: 200,
+        width: collapsed ? "0" : "280px",
+        minWidth: 0,
+        overflow: "hidden",
+        transition: "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
+        boxShadow: collapsed ? "none" : "4px 0 24px rgba(0,0,0,0.8)",
+      }
+    : {
         ...styles.sidebar,
         width: collapsed ? "48px" : SIDEBAR_WIDTH,
         minWidth: collapsed ? "48px" : SIDEBAR_WIDTH,
-      }}
-      aria-label="Conversation history"
-    >
+      };
+
+  return (
+    <aside style={sidebarStyle} aria-label="Conversation history">
       {/* ── Header: toggle + New Chat ──────────────────────────────────── */}
       <div style={styles.header}>
         {/* Toggle collapse button */}

@@ -1,54 +1,54 @@
 /**
  * src/components/chat/ChatWindow.jsx
  *
- * The scrollable message list in the chat interface.
- * Renders the conversation history as a stack of MessageBubble components
- * and auto-scrolls to the newest message whenever the list changes.
+ * Scrollable message list. Auto-scrolls to the newest message on every
+ * update and shows a typewriter loading indicator while the AI is responding.
  *
- * Layout contract with ChatPage:
- *   ChatPage allocates a fixed-height scrollable region for ChatWindow using
- *   CSS (full viewport height minus header and input area). ChatWindow fills
- *   that region and manages its own internal scroll.
+ * Loading indicator:
+ *   Cycles through 5 phrases every ~2 seconds with a character-by-character
+ *   typewriter animation and a blinking cursor. Each phrase types in at
+ *   40 ms/char, holds for 1.6 s when complete, then the next phrase begins.
+ *   Phrases: Thinking... → Processing... → Analyzing... → Gathering... → Wrapping up...
  *
  * Used by: src/pages/ChatPage.jsx.
  */
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import MessageBubble from "./MessageBubble.jsx";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const LOADING_PHRASES = [
+  "Thinking...",
+  "Processing...",
+  "Analyzing...",
+  "Gathering...",
+  "Wrapping up...",
+];
+
+const CHAR_DELAY_MS  = 40;   // time between each typed character
+const HOLD_AFTER_MS  = 1600; // how long to pause on the completed phrase
+
+// ---------------------------------------------------------------------------
+// ChatWindow
+// ---------------------------------------------------------------------------
 
 /**
  * ChatWindow
- * Renders the list of messages and auto-scrolls to the bottom whenever
- * the messages array or the loading state changes.
  *
  * Parameters:
- *   messages (Array<{ role: string, content: string }>)
- *            — ordered array of conversation turns from useChat().
- *              role is "user" or "assistant".
- *   loading  (boolean) — true while a sendMessage() request is in flight.
- *                        Renders a typing indicator at the bottom of the list.
+ *   messages (Array<{ role, content }>) — conversation turns from useChat().
+ *   loading  (boolean)                  — true while a turn is in flight.
  *
- * Returns: JSX.Element — a scrollable <div> containing MessageBubble instances.
+ * Returns: JSX.Element.
  * Used by: src/pages/ChatPage.jsx.
  */
 export default function ChatWindow({ messages, loading }) {
-  /**
-   * bottomRef
-   * An invisible div pinned to the bottom of the message list.
-   * Calling bottomRef.current.scrollIntoView() scrolls the window to
-   * the latest message without needing to calculate scroll positions.
-   */
   const bottomRef = useRef(null);
 
-  /**
-   * Auto-scroll effect
-   * Fires whenever messages or loading changes. Using "smooth" behaviour
-   * for message arrivals feels natural; the reduced-motion media query in
-   * index.css collapses smooth scrolling to instant when the user prefers it.
-   *
-   * The 10ms timeout gives React one paint cycle to flush the new message
-   * into the DOM before we try to scroll to it.
-   */
+  // Scroll to the bottom whenever messages change or loading starts/stops.
   useEffect(() => {
     const id = setTimeout(() => {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -57,81 +57,111 @@ export default function ChatWindow({ messages, loading }) {
   }, [messages, loading]);
 
   return (
-    <div style={styles.window} role="log" aria-label="Conversation" aria-live="polite">
-      {/* ── Empty state ──────────────────────────────────────────────────── */}
-      {messages.length === 0 && !loading && (
-        <div style={styles.emptyState}>
-          <span style={styles.emptyDot} aria-hidden="true" />
-          <p style={styles.emptyHeading}>Ready when you are.</p>
-          <p style={styles.emptyBody}>
-            Ask anything. Hipocampus remembers your preferences, past decisions,
-            and patterns across every session.
-          </p>
-        </div>
-      )}
+    <div
+      style={styles.window}
+      role="log"
+      aria-label="Conversation"
+      aria-live="polite"
+    >
+      {/* Empty state */}
+      {messages.length === 0 && !loading && <EmptyState />}
 
-      {/* ── Message list ─────────────────────────────────────────────────── */}
-      {messages.map((message, index) => (
+      {/* Message list */}
+      {messages.map((msg, i) => (
         <MessageBubble
-          key={index}
-          role={message.role}
-          content={message.content}
-          /*
-           * isLatest marks the final message so MessageBubble can apply a
-           * subtle fade-in entrance animation on the newest turn only.
-           */
-          isLatest={index === messages.length - 1}
+          key={i}
+          role={msg.role}
+          content={msg.content}
+          isLatest={i === messages.length - 1}
         />
       ))}
 
-      {/* ── Typing indicator ─────────────────────────────────────────────── */}
-      {loading && <TypingIndicator />}
+      {/* Typewriter loading indicator */}
+      {loading && <TypewriterIndicator />}
 
-      {/* ── Scroll anchor ────────────────────────────────────────────────── */}
+      {/* Scroll anchor */}
       <div ref={bottomRef} aria-hidden="true" />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Internal: TypingIndicator
+// Internal: EmptyState
+// ---------------------------------------------------------------------------
+
+function EmptyState() {
+  return (
+    <div style={styles.emptyState}>
+      <span style={styles.emptyDot} aria-hidden="true" />
+      <p style={styles.emptyHeading}>Ready when you are.</p>
+      <p style={styles.emptyBody}>
+        Ask anything. Hipocampus remembers your preferences, past decisions,
+        and patterns across every session.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Internal: TypewriterIndicator
 // ---------------------------------------------------------------------------
 
 /**
- * TypingIndicator
- * Three dots that animate in sequence to indicate the AI is generating a
- * response. Positioned and styled like an assistant message bubble so the
- * transition to the real response is smooth.
- *
- * Parameters: none.
- * Returns: JSX.Element.
- * Used by: ChatWindow (loading state).
+ * TypewriterIndicator
+ * Renders an AI-bubble-styled box containing a phrase that types in
+ * character by character, holds, then transitions to the next phrase.
+ * A blinking cursor tracks the typing position.
  */
-function TypingIndicator() {
+function TypewriterIndicator() {
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  const [charCount,   setCharCount]   = useState(0);
+  const [cursorOn,    setCursorOn]    = useState(true);
+
+  const phrase    = LOADING_PHRASES[phraseIndex];
+  const displayed = phrase.slice(0, charCount);
+  const done      = charCount >= phrase.length;
+
+  // Blink the cursor on a 530 ms interval — same rhythm as most OS cursors.
+  useEffect(() => {
+    const id = setInterval(() => setCursorOn((v) => !v), 530);
+    return () => clearInterval(id);
+  }, []);
+
+  // Typing progression.
+  useEffect(() => {
+    if (done) {
+      // Phrase fully typed → wait, then move to next phrase.
+      const id = setTimeout(() => {
+        setPhraseIndex((i) => (i + 1) % LOADING_PHRASES.length);
+        setCharCount(0);
+      }, HOLD_AFTER_MS);
+      return () => clearTimeout(id);
+    }
+    // Type next character.
+    const id = setTimeout(() => setCharCount((c) => c + 1), CHAR_DELAY_MS);
+    return () => clearTimeout(id);
+  }, [charCount, done]);
+
   return (
-    <div style={styles.typingWrapper} aria-label="AI is responding" role="status">
-      <div style={styles.typingBubble}>
-        {[0, 1, 2].map((i) => (
+    <div style={styles.typerWrapper} aria-label="AI is responding" role="status">
+      {/* Hipocampus avatar dot */}
+      <span style={styles.aiDot} aria-hidden="true" />
+
+      <div style={styles.typerBubble}>
+        <span style={styles.typerText} aria-live="off">
+          {displayed}
+          {/* Blinking cursor — visible while typing, blinks after done */}
           <span
-            key={i}
             style={{
-              ...styles.typingDot,
-              animationDelay: `${i * 0.18}s`,
+              ...styles.cursor,
+              opacity: done ? (cursorOn ? 1 : 0) : 1,
             }}
             aria-hidden="true"
-          />
-        ))}
+          >
+            |
+          </span>
+        </span>
       </div>
-      {/*
-        Inline keyframes for the dot bounce. Only used here so not worth
-        polluting index.css.
-      */}
-      <style>{`
-        @keyframes dotBounce {
-          0%, 80%, 100% { transform: translateY(0);   opacity: 0.35; }
-          40%            { transform: translateY(-6px); opacity: 1;    }
-        }
-      `}</style>
     </div>
   );
 }
@@ -148,14 +178,13 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     gap: "var(--sp-2)",
-    // Subtle gradient fade at the top so messages "emerge" from nothing
-    // rather than appearing at a hard edge.
     maskImage:
       "linear-gradient(to bottom, transparent 0%, black 3%, black 97%, transparent 100%)",
     WebkitMaskImage:
       "linear-gradient(to bottom, transparent 0%, black 3%, black 97%, transparent 100%)",
   },
 
+  // ── Empty state ────────────────────────────────────────────────────────
   emptyState: {
     flex: 1,
     display: "flex",
@@ -194,29 +223,48 @@ const styles = {
     margin: 0,
   },
 
-  typingWrapper: {
+  // ── Typewriter indicator ───────────────────────────────────────────────
+  typerWrapper: {
     display: "flex",
-    justifyContent: "flex-start",
+    alignItems: "flex-end",
+    gap: "var(--sp-2)",
     padding: "0 var(--sp-2)",
   },
 
-  typingBubble: {
-    display: "flex",
-    alignItems: "center",
-    gap: "5px",
+  aiDot: {
+    flexShrink: 0,
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    background: "var(--color-accent)",
+    boxShadow: "var(--shadow-accent-glow)",
+    marginBottom: "var(--sp-2)",
+  },
+
+  typerBubble: {
     padding: "var(--sp-3) var(--sp-4)",
     background: "var(--color-bubble-ai)",
     border: "1px solid var(--color-border)",
     borderRadius: "var(--radius-md)",
     borderBottomLeftRadius: "4px",
+    minWidth: "140px",   // prevents jarring width jump between short phrases
   },
 
-  typingDot: {
+  typerText: {
+    fontFamily: "var(--font-body)",
+    fontSize: "var(--fs-sm)",
+    color: "var(--color-text-secondary)",
+    letterSpacing: "0.01em",
+  },
+
+  cursor: {
     display: "inline-block",
-    width: "6px",
-    height: "6px",
-    borderRadius: "50%",
-    background: "var(--color-text-secondary)",
-    animation: "dotBounce 1.2s ease-in-out infinite",
+    marginLeft: "1px",
+    color: "var(--color-accent)",
+    fontWeight: "var(--fw-bold)",
+    fontSize: "var(--fs-base)",
+    lineHeight: 1,
+    transition: "opacity 100ms ease",
+    userSelect: "none",
   },
 };

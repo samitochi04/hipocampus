@@ -1,38 +1,83 @@
 /**
  * src/components/chat/MessageBubble.jsx
  *
- * Renders a single message in the conversation — either a user turn or an
- * AI response. Handles alignment, colour, and basic text formatting.
+ * Renders a single message turn — user or assistant.
  *
- * Markdown handling:
- *   The AI frequently returns code blocks, bullet lists, and bold text.
- *   Rather than pulling in a full markdown library, this component does
- *   lightweight preprocessing: code blocks are extracted and rendered in
- *   <pre><code> elements; everything else is rendered as plain text.
- *   If the project grows to need full markdown, replace renderContent()
- *   with a `react-markdown` call — the component interface stays identical.
+ * AI messages are rendered with react-markdown + remark-gfm + syntax
+ * highlighting so the user sees formatted headings, lists, tables, and
+ * coloured code blocks instead of raw markdown characters.
+ *
+ * User messages are kept as plain text — users type prose, not markdown.
+ *
+ * Design notes (B&W theme):
+ *   User bubbles are WHITE (#FFFFFF) with BLACK text — the human's words
+ *   appear on a white ground. AI bubbles are dark charcoal (#141414) with
+ *   white text. The contrast is intentional and mirrors the logo.
  *
  * Used by: src/components/chat/ChatWindow.jsx.
  */
 
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+// ---------------------------------------------------------------------------
+// Markdown component overrides
+// ---------------------------------------------------------------------------
+
+/**
+ * mdComponents
+ * Custom renderers passed to ReactMarkdown. Only code blocks need special
+ * treatment (syntax highlighting). Everything else uses the .md-body CSS
+ * classes defined in index.css.
+ */
+const mdComponents = {
+  code({ node, inline, className, children, ...props }) {
+    const langMatch = /language-(\w+)/.exec(className || "");
+    if (!inline && langMatch) {
+      return (
+        <SyntaxHighlighter
+          style={oneDark}
+          language={langMatch[1]}
+          PreTag="div"
+          customStyle={{
+            margin: "0.75em 0",
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid #2A2A2A",
+            fontSize: "0.85em",
+          }}
+          codeTagProps={{ style: { fontFamily: "var(--font-mono)" } }}
+          {...props}
+        >
+          {String(children).replace(/\n$/, "")}
+        </SyntaxHighlighter>
+      );
+    }
+    // Inline code — styled via .md-body code in index.css
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  },
+};
+
+// ---------------------------------------------------------------------------
+// MessageBubble
+// ---------------------------------------------------------------------------
+
 /**
  * MessageBubble
- * Renders one message turn with appropriate styling for the role.
  *
  * Parameters:
- *   role     ("user" | "assistant") — determines alignment and colour.
- *                                     User bubbles are right-aligned in a
- *                                     darker surface colour; AI bubbles are
- *                                     left-aligned in a slightly lighter tone.
- *   content  (string)               — the raw message text. May contain
- *                                     markdown code fences (``` blocks).
- *   isLatest (boolean)              — true for the most recently added message.
- *                                     Applies a subtle fade-in entrance so the
- *                                     new message draws attention without
- *                                     being jarring.
+ *   role     ("user" | "assistant") — alignment and colour.
+ *   content  (string)               — raw message text (may contain markdown
+ *                                     for assistant turns).
+ *   isLatest (boolean)              — applies fade-in entrance animation.
  *
  * Returns: JSX.Element.
- * Used by: src/components/chat/ChatWindow.jsx (mapped over messages array).
+ * Used by: ChatWindow.
  */
 export default function MessageBubble({ role, content, isLatest }) {
   const isUser = role === "user";
@@ -45,30 +90,42 @@ export default function MessageBubble({ role, content, isLatest }) {
         animation: isLatest ? "fadeSlideIn 200ms ease forwards" : "none",
       }}
     >
-      {/* ── Avatar dot ───────────────────────────────────────────────────── */}
+      {/* AI avatar dot */}
       {!isUser && (
-        <span style={styles.aiDot} aria-hidden="true" title="Hipocampus" />
+        <span
+          style={styles.aiDot}
+          aria-hidden="true"
+          title="Hipocampus"
+        />
       )}
 
-      {/* ── Bubble ───────────────────────────────────────────────────────── */}
+      {/* Bubble */}
       <div
         style={{
           ...styles.bubble,
           ...(isUser ? styles.userBubble : styles.aiBubble),
-          // Slightly different radius for the "tail" corner
           borderBottomRightRadius: isUser ? "4px" : "var(--radius-md)",
-          borderBottomLeftRadius: isUser ? "var(--radius-md)" : "4px",
+          borderBottomLeftRadius:  isUser ? "var(--radius-md)" : "4px",
         }}
         role={isUser ? undefined : "article"}
         aria-label={isUser ? undefined : "AI response"}
       >
-        {renderContent(content)}
+        {isUser ? (
+          // Plain text for user messages
+          <PlainText content={content} />
+        ) : (
+          // Full markdown for assistant messages
+          <div className="md-body">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={mdComponents}
+            >
+              {content}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
 
-      {/*
-        Keyframes injected once — safe to repeat render because browsers
-        deduplicate identical <style> tags within the same document.
-      */}
       <style>{`
         @keyframes fadeSlideIn {
           from { opacity: 0; transform: translateY(6px); }
@@ -80,56 +137,29 @@ export default function MessageBubble({ role, content, isLatest }) {
 }
 
 // ---------------------------------------------------------------------------
-// Internal: renderContent
+// Internal: PlainText
 // ---------------------------------------------------------------------------
 
 /**
- * renderContent
- * Splits the message content on triple-backtick code fences and renders
- * each segment as either a <pre><code> block or plain text paragraphs.
- *
- * Strategy:
- *   Split on ``` — alternating segments are code (odd indices) and prose (even).
- *   Prose segments are further split on newlines to produce <p> elements.
- *
- * Parameters:
- *   content (string) — the raw message string from the API.
- *
- * Returns: Array<JSX.Element> — the rendered segments.
- * Used by: MessageBubble render.
+ * PlainText
+ * Renders a user message as plain paragraphs with line-break support.
+ * No markdown parsing — users type prose.
  */
-function renderContent(content) {
+function PlainText({ content }) {
   if (!content) return null;
-
-  // Split on code fences. Segments at odd indices are code blocks.
-  const parts = content.split(/```(?:\w+)?\n?/);
-
-  return parts.map((part, i) => {
-    const isCode = i % 2 === 1;
-
-    if (isCode) {
-      return (
-        <pre key={i} style={styles.codeBlock}>
-          <code style={styles.codeText}>{part.trimEnd()}</code>
-        </pre>
-      );
-    }
-
-    // Prose — split on double newlines for paragraphs, single newlines for <br>.
-    const paragraphs = part.split(/\n\n+/);
-    return paragraphs
-      .filter((p) => p.trim())
-      .map((paragraph, j) => (
-        <p key={`${i}-${j}`} style={styles.paragraph}>
-          {paragraph.split("\n").map((line, k, arr) => (
-            <span key={k}>
-              {line}
-              {k < arr.length - 1 && <br />}
-            </span>
-          ))}
-        </p>
-      ));
-  });
+  return content
+    .split(/\n\n+/)
+    .filter((p) => p.trim())
+    .map((para, i) => (
+      <p key={i} style={styles.paragraph}>
+        {para.split("\n").map((line, j, arr) => (
+          <span key={j}>
+            {line}
+            {j < arr.length - 1 && <br />}
+          </span>
+        ))}
+      </p>
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +172,6 @@ const styles = {
     alignItems: "flex-end",
     gap: "var(--sp-2)",
     padding: "0 var(--sp-2)",
-    // Max width so long messages don't span the full chat width
     maxWidth: "100%",
   },
 
@@ -163,16 +192,13 @@ const styles = {
     fontSize: "var(--fs-base)",
     lineHeight: "1.65",
     wordBreak: "break-word",
-    // Smooth entry — controlled by the parent wrapper's animation prop
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--sp-2)",
   },
 
   userBubble: {
     background: "var(--color-bubble-user)",
     border: "1px solid var(--color-border)",
-    color: "var(--color-text-primary)",
+    // White bubble — MUST use black text (set in CSS var --color-bubble-user-text)
+    color: "var(--color-bubble-user-text)",
   },
 
   aiBubble: {
@@ -184,25 +210,5 @@ const styles = {
   paragraph: {
     margin: 0,
     lineHeight: "1.65",
-  },
-
-  codeBlock: {
-    margin: 0,
-    padding: "var(--sp-3) var(--sp-4)",
-    background: "var(--color-bg-base)",
-    border: "1px solid var(--color-border)",
-    borderRadius: "var(--radius-sm)",
-    overflowX: "auto",
-    // Scrollbar inside code blocks uses the same subtle styling
-    scrollbarWidth: "thin",
-    scrollbarColor: "var(--color-border) transparent",
-  },
-
-  codeText: {
-    fontFamily: "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
-    fontSize: "var(--fs-sm)",
-    color: "var(--color-accent)",
-    lineHeight: "1.6",
-    whiteSpace: "pre",
   },
 };

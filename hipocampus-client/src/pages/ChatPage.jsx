@@ -21,7 +21,7 @@
  * Used by: src/App.jsx (both routes).
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Header from "../components/layout/Header.jsx";
 import ChatWindow from "../components/chat/ChatWindow.jsx";
@@ -32,7 +32,21 @@ import { useChat } from "../hooks/useChat.js";
 export default function ChatPage() {
   const { chatId }  = useParams();           // undefined on /chat
   const navigate    = useNavigate();
-  const [collapsed, setCollapsed] = useState(false);
+
+  // Mobile detection — sidebar is a drawer overlay below 768 px.
+  const [isMobile,  setIsMobile]  = useState(() => window.innerWidth < 768);
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768);
+
+  useEffect(() => {
+    function onResize() {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      // Auto-collapse when resizing into mobile, auto-expand into desktop.
+      setCollapsed(mobile);
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   /**
    * handleChatCreated
@@ -79,19 +93,25 @@ export default function ChatPage() {
 
   return (
     <div style={styles.page}>
-      {/* ── Fixed header ─────────────────────────────────────────────── */}
       <Header />
 
-      {/* ── Body row (sidebar + chat column) ─────────────────────────── */}
       <div style={styles.body}>
+        {/* Mobile backdrop — dims chat when drawer is open */}
+        {isMobile && !collapsed && (
+          <div
+            style={styles.backdrop}
+            onClick={() => setCollapsed(true)}
+            aria-hidden="true"
+          />
+        )}
 
-        {/* Sidebar */}
         <ChatSidebar
           activeChatId={chatId ?? null}
           onChatSelect={handleChatSelect}
           onNewChat={handleNewChat}
           collapsed={collapsed}
           onToggle={() => setCollapsed((c) => !c)}
+          isMobile={isMobile}
         />
 
         {/* Chat column */}
@@ -180,28 +200,38 @@ const styles = {
   page: {
     display: "flex",
     flexDirection: "column",
-    height: "100vh",
+    // dvh = dynamic viewport height — handles iOS browser chrome correctly.
+    // Falls back to vh in browsers that don't support dvh.
+    height: "100dvh",
     overflow: "hidden",
     background: "var(--color-bg-base)",
   },
 
-  // Full-height row below the fixed header.
   body: {
     display: "flex",
     flexDirection: "row",
     flex: 1,
     marginTop: "var(--header-height)",
-    height: "calc(100vh - var(--header-height))",
+    height: "calc(100dvh - var(--header-height))",
     overflow: "hidden",
   },
 
-  // Right-hand chat area: takes remaining width, stacks vertically.
   chatColumn: {
     flex: 1,
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    minWidth: 0, // Prevent flex child overflow on narrow screens.
+    minWidth: 0,
+  },
+
+  // Semi-transparent scrim shown behind the mobile sidebar drawer.
+  backdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0, 0, 0, 0.65)",
+    zIndex: 199,
+    backdropFilter: "blur(1px)",
+    WebkitBackdropFilter: "blur(1px)",
   },
 };
 
