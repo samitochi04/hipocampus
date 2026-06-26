@@ -23,6 +23,7 @@ import RegisterPage from "./pages/RegisterPage.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import ChatPage from "./pages/ChatPage.jsx";
 import MemoryPage from "./pages/MemoryPage.jsx";
+import AnalysePage from "./pages/AnalysePage.jsx";
 
 /**
  * App
@@ -47,6 +48,7 @@ export default function App() {
       {/* ── Public routes ─────────────────────────────────────────────── */}
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/analyse" element={<AnalysePage />} />
 
       {/* ── Protected routes ──────────────────────────────────────────── */}
       {/*
