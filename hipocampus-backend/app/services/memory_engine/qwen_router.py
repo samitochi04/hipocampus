@@ -177,6 +177,91 @@ async def generate(
     return _extract_text(body)
 
 
+async def generate_with_search(
+    system_prompt: str,
+    messages: list[dict[str, str]],
+    temperature: float = 0.1,
+    max_tokens: int = 2048,
+) -> tuple[str, bool]:
+    """
+    Like generate() but with Qwen's built-in web search MCP tool enabled.
+
+    Passes ``enable_search: True`` — a DashScope extension to the OpenAI-
+    compatible endpoint that activates Qwen's real-time web search capability.
+    Qwen autonomously decides whether to invoke the search tool based on
+    whether the user's query requires up-to-date information.
+
+    This is Hipocampus's MCP integration: the model operates as an agent
+    that can call an external tool (web search) and incorporate the results
+    into its response — all within a single API call to DashScope.
+
+    Detection heuristic:
+        DashScope embeds ``search_info`` in the response body when a search
+        was performed. We also scan for URL patterns in the reply text as a
+        fallback (Qwen cites sources inline when referencing web results).
+
+    Parameters:
+        system_prompt (str)        — same as generate().
+        messages      (list[dict]) — same as generate().
+        temperature   (float)      — sampling temperature, default 0.1.
+        max_tokens    (int)        — max reply tokens, default 2048.
+
+    Returns:
+        tuple[str, bool]
+          [0] — assistant reply text (may contain inline citations/URLs).
+          [1] — True if Qwen's web search tool was invoked for this turn.
+
+    Raises:
+        QwenAPIError — on any API or network failure.
+
+    Used by: app/services/chat_service.py → process_turn()
+    """
+    import re as _re
+
+    payload = {
+        "model": "qwen-max",
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            *messages,
+        ],
+        # DashScope extension: enable real-time web search MCP tool.
+        # Qwen decides autonomously whether the query needs a search.
+        "enable_search": True,
+    }
+
+    # Allow extra time — web search adds a retrieval round-trip.
+    body = await _post(payload, timeout=90.0)
+    text = _extract_text(body)
+
+    # ── Detect whether a web search was actually performed ─────────────────
+    # DashScope embeds ``search_info`` (list of result objects) at the top
+    # level of the response body when Qwen invoked the search tool.
+    # Fallback: detect inline URLs that Qwen cites when referencing results.
+    web_searched = False
+
+    raw_search_info = body.get("search_info")
+    if raw_search_info:
+        # Non-empty list or dict means a search ran.
+        if isinstance(raw_search_info, list) and raw_search_info:
+            web_searched = True
+        elif isinstance(raw_search_info, dict) and raw_search_info:
+            web_searched = True
+
+    if not web_searched:
+        # Heuristic: Qwen cites sources as hyperlinks when it uses web results.
+        if _re.search(r"https?://\S{8,}", text):
+            web_searched = True
+
+    logger.debug(
+        "generate_with_search completed: web_searched=%s reply_len=%d",
+        web_searched, len(text),
+    )
+    return text, web_searched
+
+
+
 async def expand_query(user_message: str) -> list[str]:
     """
     Asks qwen-max to generate semantic query variants of the user's message

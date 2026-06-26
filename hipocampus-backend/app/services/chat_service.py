@@ -37,7 +37,7 @@ from app.models.episode import Episode
 from app.schemas.auth import UserOut
 from app.schemas.chat import ChatResponse
 from app.services.memory_engine.importance import score_importance
-from app.services.memory_engine.qwen_router import embed_text, generate
+from app.services.memory_engine.qwen_router import embed_text, generate, generate_with_search
 from app.services.memory_engine.redis_buffer import get_buffer, push_message
 from app.services.memory_engine.tier_retrieval import retrieve_all_tiers
 
@@ -345,16 +345,19 @@ async def process_turn(
         session_id=active_session_id,
     )
 
-    # ── Step 5: Call Qwen-Max ────────────────────────────────────────────────
-    llm_response = await generate(
+    # ── Step 5: Call Qwen-Max with web search MCP tool ──────────────────────
+    # generate_with_search() passes enable_search=True to DashScope so Qwen
+    # can autonomously invoke real-time web search when the query needs current
+    # information. Returns (text, was_search_used).
+    llm_response, web_searched = await generate_with_search(
         system_prompt=system_prompt,
         messages=buffer_messages,
         temperature=0.1,
         max_tokens=2048,
     )
     logger.debug(
-        "Received LLM response for session=%s (%d chars)",
-        active_session_id, len(llm_response),
+        "LLM response for session=%s: %d chars web_searched=%s",
+        active_session_id, len(llm_response), web_searched,
     )
 
     # ── Step 6: Push assistant reply to Redis buffer ─────────────────────────
@@ -424,6 +427,7 @@ async def process_turn(
         response=llm_response,
         context_tokens_used=context_tokens_used,
         importance_score=importance,
+        web_searched=web_searched,
     )
 
 

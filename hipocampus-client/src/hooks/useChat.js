@@ -54,6 +54,9 @@ export function useChat({ chatId = null, onChatCreated } = {}) {
   const [loading, setLoading]             = useState(false);
   const [conflict, setConflict]           = useState(null);
   const [error, setError]                 = useState(null);
+  // True when the last response used Qwen's web search MCP tool.
+  // Resets on every new send so the badge only shows for the latest turn.
+  const [webSearched, setWebSearched]     = useState(false);
 
   /**
    * sessionId is internal: populated from the loaded archive (existing chat)
@@ -134,6 +137,7 @@ export function useChat({ chatId = null, onChatCreated } = {}) {
 
     setConflict(null);
     setError(null);
+    setWebSearched(false);  // reset badge before each new turn
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setLoading(true);
 
@@ -147,6 +151,9 @@ export function useChat({ chatId = null, onChatCreated } = {}) {
 
       // Update session_id from the response (populated on first turn).
       if (data.session_id) setSessionId(data.session_id);
+
+      // Record whether Qwen's web search MCP tool was used.
+      setWebSearched(!!data.web_searched);
 
       // First turn of a brand-new chat → notify ChatPage to navigate.
       if (!chatId && data.chat_id) {
@@ -181,6 +188,7 @@ export function useChat({ chatId = null, onChatCreated } = {}) {
     conflict,
     error,
     sessionId,
+    webSearched,
     send,
     dismissConflict,
     dismissError,

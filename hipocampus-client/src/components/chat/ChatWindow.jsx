@@ -45,7 +45,7 @@ const HOLD_AFTER_MS  = 1600; // how long to pause on the completed phrase
  * Returns: JSX.Element.
  * Used by: src/pages/ChatPage.jsx.
  */
-export default function ChatWindow({ messages, loading }) {
+export default function ChatWindow({ messages, loading, webSearched = false }) {
   const bottomRef = useRef(null);
 
   // Scroll to the bottom whenever messages change or loading starts/stops.
@@ -76,11 +76,37 @@ export default function ChatWindow({ messages, loading }) {
         />
       ))}
 
+      {/* Web search badge — shown after the latest AI reply when search was used */}
+      {webSearched && !loading && messages.length > 0 &&
+       messages[messages.length - 1].role === "assistant" && (
+        <WebSearchBadge />
+      )}
+
       {/* Typewriter loading indicator */}
       {loading && <TypewriterIndicator />}
 
       {/* Scroll anchor */}
       <div ref={bottomRef} aria-hidden="true" />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Internal: WebSearchBadge
+// ---------------------------------------------------------------------------
+
+/**
+ * WebSearchBadge
+ * Subtle pill shown below the latest AI response when Qwen's web search
+ * MCP tool was invoked for that turn. Communicates the tool use to the user
+ * without cluttering the message bubble itself.
+ */
+function WebSearchBadge() {
+  return (
+    <div style={styles.searchBadgeWrapper} aria-label="Web search was used">
+      <span style={styles.searchBadge}>
+        🔍 Searched the web · Powered by Qwen MCP
+      </span>
     </div>
   );
 }
@@ -182,6 +208,25 @@ const styles = {
       "linear-gradient(to bottom, transparent 0%, black 3%, black 97%, transparent 100%)",
     WebkitMaskImage:
       "linear-gradient(to bottom, transparent 0%, black 3%, black 97%, transparent 100%)",
+  },
+
+  // ── Web search badge ───────────────────────────────────────────────────
+  searchBadgeWrapper: {
+    display: "flex",
+    justifyContent: "flex-start",
+    padding: "0 var(--sp-2)",
+  },
+  searchBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "var(--sp-2)",
+    padding: "var(--sp-1) var(--sp-3)",
+    background: "rgba(255, 255, 255, 0.04)",
+    border: "1px solid rgba(255, 255, 255, 0.10)",
+    borderRadius: "var(--radius-lg)",
+    fontSize: "var(--fs-xs)",
+    color: "var(--color-text-placeholder)",
+    letterSpacing: "0.01em",
   },
 
   // ── Empty state ────────────────────────────────────────────────────────

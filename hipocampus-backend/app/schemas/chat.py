@@ -67,15 +67,13 @@ class ChatResponse(BaseModel):
 
     Parameters:
         session_id          (str)   — the session key in use for this turn.
-                                      Matches chats.session_id. The client stores
-                                      this and sends it on subsequent turns to
-                                      stay in the same chat.
-        chat_id             (str)   — UUID of the Chat row. Used by the client
-                                      to navigate to /chat/:chatId after the
-                                      first turn of a new chat.
+        chat_id             (str)   — UUID of the Chat row.
         response            (str)   — the LLM's reply for this turn.
         context_tokens_used (int)   — tokens consumed by the [MEMORY_CONTEXT] block.
         importance_score    (float) — 0–1 importance of this turn.
+        web_searched        (bool)  — True if Qwen invoked the web search MCP
+                                      tool for this turn (enable_search=True
+                                      and DashScope confirmed a search ran).
 
     Used by: app/api/v1/chat.py → chat()
     """
@@ -85,6 +83,7 @@ class ChatResponse(BaseModel):
     response: str
     context_tokens_used: int
     importance_score: float
+    web_searched: bool = False
 
 
 class ChatHistoryMessage(BaseModel):

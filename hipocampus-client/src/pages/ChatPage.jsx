@@ -65,6 +65,7 @@ export default function ChatPage() {
     messages,
     historyLoading,
     loading,
+    webSearched,
     conflict,
     error,
     send,
@@ -139,6 +140,7 @@ export default function ChatPage() {
           <ChatWindow
             messages={messages}
             loading={loading || historyLoading}
+            webSearched={webSearched}
           />
 
           {/* Conflict banner (409) */}
