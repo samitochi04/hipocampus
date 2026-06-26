@@ -37,7 +37,6 @@ python-multipart==0.0.32
 PyMuPDF==1.24.10                 # PDF text extraction — imports as `import fitz`
 
 # --- Web search (MCP tool execution) ---
-duckduckgo_search==6.3.7         # Free real-time web search; no API key required
 pytest==8.3.3
 pytest-asyncio==0.24.0
 pytest-cov==5.0.0

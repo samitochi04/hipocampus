@@ -210,70 +210,94 @@ _WEB_SEARCH_TOOL: dict = {
 
 async def _run_search(query: str, max_results: int = 6) -> list[dict]:
     """
-    Real web search via DuckDuckGo with retry + news-endpoint fallback.
+    Web search using DuckDuckGo's HTML endpoint via httpx.
 
-    Strategy:
-      Attempt 1 — text search. If rate-limited, sleep 3 s then:
-      Attempt 2 — news search (separate DuckDuckGo endpoint).
-      Both fail — return an informative error dict so Qwen tells the user
-      to retry instead of wrongly concluding the event "hasn't occurred".
+    Why httpx directly instead of the duckduckgo_search library?
+    The library's v6.x series uses 'primp' for browser impersonation.
+    On this server primp cannot find its browser profiles (chrome_118,
+    safari_ios_16.5, etc.) so it falls back to 'random', which triggers
+    DuckDuckGo's bot detection and rate-limits the very first request.
+
+    This implementation POSTs to html.duckduckgo.com — the same endpoint
+    browsers use in no-JS mode. It is far less aggressively rate-limited
+    than the JS API endpoints the library targets, and uses only httpx
+    which is already a project dependency.
+
+    Parameters:
+        query       (str) — search query from Qwen's tool call.
+        max_results (int) — max number of results to return.
+
+    Returns:
+        list[dict] with "title", "url", "snippet" keys, or a
+        "search_note" dict when no results are available.
     """
-    import asyncio as _asyncio
-    import time as _time
+    import re as _re
+    import html as _html
     from datetime import UTC as _UTC, datetime as _dt
 
     today_str = _dt.now(_UTC).strftime("%B %d, %Y")
 
-    def _fmt_text(raw: list) -> list[dict]:
-        return [{"title": r.get("title",""), "url": r.get("href",""), "snippet": r.get("body","")} for r in raw]
+    _HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
 
-    def _fmt_news(raw: list) -> list[dict]:
-        return [{"title": r.get("title",""), "url": r.get("url",""),  "snippet": r.get("body","")} for r in raw]
-
-    def _sync() -> list[dict]:
-        try:
-            from duckduckgo_search import DDGS
-        except ImportError:
-            return [{"error": "duckduckgo_search package not installed."}]
-
-        # Attempt 1 — text search
-        try:
-            with DDGS() as ddgs:
-                raw = list(ddgs.text(query, max_results=max_results))
-            if raw:
-                logger.info("Search OK (text): %r → %d", query, len(raw))
-                return _fmt_text(raw)
-        except Exception as exc1:
-            is_rate = "rate" in str(exc1).lower() or "202" in str(exc1)
-            logger.warning("Text search %s for %r: %s", "rate-limited" if is_rate else "failed", query, exc1)
-            if is_rate:
-                _time.sleep(3)
-
-        # Attempt 2 — news search (different DDG endpoint)
-        try:
-            with DDGS() as ddgs:
-                raw = list(ddgs.news(query, max_results=max_results))
-            if raw:
-                logger.info("Search OK (news): %r → %d", query, len(raw))
-                return _fmt_news(raw)
-        except Exception as exc2:
-            logger.warning("News search failed for %r: %s", query, exc2)
-
-        # Both failed — give Qwen enough context to answer gracefully
-        # without panicking or asking the user to retry.
-        return [{
-            "search_note": (
-                f"Web search returned no results for this query (likely rate-limited). "
-                f"Today is {today_str}. "
-                f"Answer using your training knowledge where possible. "
-                f"If the topic is from 2025-2026 and you genuinely don't know, "
-                f"say so briefly and suggest the user checks a current source — "
-                f"do NOT say search is 'temporarily unavailable' or ask them to retry."
+    try:
+        async with httpx.AsyncClient(
+            timeout=20,
+            follow_redirects=True,
+            headers=_HEADERS,
+        ) as client:
+            resp = await client.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query, "kl": "wt-wt", "s": "0"},
             )
-        }]
 
-    loop = _asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _sync)
+        if resp.status_code != 200:
+            logger.warning("DDG HTML %d for %r", resp.status_code, query)
+            return [{"search_note": f"Search HTTP {resp.status_code}. Today {today_str}. Answer from knowledge."}]
+
+        page = resp.text
+
+        # Extract result title links — each has class="result__a"
+        title_re   = _re.compile(r'class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', _re.DOTALL)
+        snippet_re = _re.compile(r'class="result__snippet"[^>]*>(.*?)</a>', _re.DOTALL)
+
+        clean = lambda t: _html.unescape(_re.sub(r"<[^>]+>", " ", t)).strip()
+
+        titles   = title_re.findall(page)
+        snippets = snippet_re.findall(page)
+
+        results = []
+        for i, (href, title_html) in enumerate(titles[:max_results]):
+            title   = clean(title_html)
+            snippet = clean(snippets[i]) if i < len(snippets) else ""
+            if title and href and not href.startswith("//duckduckgo"):
+                results.append({"title": title, "url": href, "snippet": snippet})
+
+        if results:
+            logger.info("Search OK (html/%d): %r", len(results), query)
+            return results
+
+        logger.warning("Search: no results parsed from DDG HTML for %r", query)
+
+    except Exception as exc:
+        logger.warning("Search error for %r: %s", query, exc)
+
+    return [{
+        "search_note": (
+            f"Search found no results. Today is {today_str}. "
+            f"Answer using your training knowledge. If the topic is from 2025-2026 "
+            f"and you genuinely don't know, say so briefly — do not claim search "
+            f"is unavailable or ask the user to retry."
+        )
+    }]
 
 
 async def generate_with_search(
