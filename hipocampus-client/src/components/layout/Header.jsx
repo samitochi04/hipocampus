@@ -12,7 +12,7 @@
  * Used by: src/pages/ChatPage.jsx, src/pages/MemoryPage.jsx.
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth.js";
 
@@ -29,14 +29,19 @@ import { useAuth } from "../../hooks/useAuth.js";
 export default function Header() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-
-  /**
-   * loggingOut state
-   * Disables the logout button while the logout request is in flight to
-   * prevent double-clicks. AuthContext.logout() navigates to /login when
-   * done, so this state is automatically discarded.
-   */
   const [loggingOut, setLoggingOut] = useState(false);
+
+  // ── Theme toggle ──────────────────────────────────────────────────────────
+  const [isDark, setIsDark] = useState(() => {
+    // Read from localStorage; default to dark if not set.
+    return localStorage.getItem("hipocampus-theme") !== "light";
+  });
+
+  useEffect(() => {
+    const theme = isDark ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("hipocampus-theme", theme);
+  }, [isDark]);
 
   /**
    * handleLogout
@@ -98,6 +103,16 @@ export default function Header() {
         >
           Memory
         </NavLink>
+
+        {/* Theme toggle */}
+        <button
+          onClick={() => setIsDark((d) => !d)}
+          style={styles.themeBtn}
+          aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+          title={isDark ? "Light mode" : "Dark mode"}
+        >
+          {isDark ? "☀" : "☾"}
+        </button>
 
         {/* Separator */}
         <span style={styles.separator} aria-hidden="true" />
@@ -207,6 +222,23 @@ const styles = {
     // A 2px accent underline marks the active page
     borderBottom: "2px solid var(--color-accent)",
     paddingBottom: "calc(var(--sp-1) - 2px)",
+  },
+
+  themeBtn: {
+    fontFamily: "var(--font-body)",
+    fontSize: "var(--fs-base)",
+    color: "var(--color-text-secondary)",
+    background: "none",
+    border: "1px solid var(--color-border)",
+    borderRadius: "var(--radius-sm)",
+    width: "30px",
+    height: "30px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    transition: "border-color var(--transition-fast), color var(--transition-fast)",
+    flexShrink: 0,
   },
 
   separator: {

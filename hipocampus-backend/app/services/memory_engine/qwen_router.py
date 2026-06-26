@@ -177,6 +177,105 @@ async def generate(
     return _extract_text(body)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Web search tool definition (MCP-compatible function calling)
+# ---------------------------------------------------------------------------
+
+_WEB_SEARCH_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the internet for current, real-time information. "
+            "Use this when the user asks about recent events, live scores, "
+            "current prices, statistics published after your training cutoff, "
+            "or when they explicitly provide a URL or reference to an online source. "
+            "Always search before claiming you don't have access to recent data."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Specific search query — keep it concise and factual.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+async def _run_search(query: str, max_results: int = 6) -> list[dict]:
+    """
+    Real web search via DuckDuckGo with retry + news-endpoint fallback.
+
+    Strategy:
+      Attempt 1 — text search. If rate-limited, sleep 3 s then:
+      Attempt 2 — news search (separate DuckDuckGo endpoint).
+      Both fail — return an informative error dict so Qwen tells the user
+      to retry instead of wrongly concluding the event "hasn't occurred".
+    """
+    import asyncio as _asyncio
+    import time as _time
+    from datetime import UTC as _UTC, datetime as _dt
+
+    today_str = _dt.now(_UTC).strftime("%B %d, %Y")
+
+    def _fmt_text(raw: list) -> list[dict]:
+        return [{"title": r.get("title",""), "url": r.get("href",""), "snippet": r.get("body","")} for r in raw]
+
+    def _fmt_news(raw: list) -> list[dict]:
+        return [{"title": r.get("title",""), "url": r.get("url",""),  "snippet": r.get("body","")} for r in raw]
+
+    def _sync() -> list[dict]:
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            return [{"error": "duckduckgo_search package not installed."}]
+
+        # Attempt 1 — text search
+        try:
+            with DDGS() as ddgs:
+                raw = list(ddgs.text(query, max_results=max_results))
+            if raw:
+                logger.info("Search OK (text): %r → %d", query, len(raw))
+                return _fmt_text(raw)
+        except Exception as exc1:
+            is_rate = "rate" in str(exc1).lower() or "202" in str(exc1)
+            logger.warning("Text search %s for %r: %s", "rate-limited" if is_rate else "failed", query, exc1)
+            if is_rate:
+                _time.sleep(3)
+
+        # Attempt 2 — news search (different DDG endpoint)
+        try:
+            with DDGS() as ddgs:
+                raw = list(ddgs.news(query, max_results=max_results))
+            if raw:
+                logger.info("Search OK (news): %r → %d", query, len(raw))
+                return _fmt_news(raw)
+        except Exception as exc2:
+            logger.warning("News search failed for %r: %s", query, exc2)
+
+        # Both failed — give Qwen enough context to answer gracefully
+        # without panicking or asking the user to retry.
+        return [{
+            "search_note": (
+                f"Web search returned no results for this query (likely rate-limited). "
+                f"Today is {today_str}. "
+                f"Answer using your training knowledge where possible. "
+                f"If the topic is from 2025-2026 and you genuinely don't know, "
+                f"say so briefly and suggest the user checks a current source — "
+                f"do NOT say search is 'temporarily unavailable' or ask them to retry."
+            )
+        }]
+
+    loop = _asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _sync)
+
+
 async def generate_with_search(
     system_prompt: str,
     messages: list[dict[str, str]],
@@ -184,83 +283,89 @@ async def generate_with_search(
     max_tokens: int = 2048,
 ) -> tuple[str, bool]:
     """
-    Like generate() but with Qwen's built-in web search MCP tool enabled.
+    Like generate() but with a real web search MCP tool attached.
 
-    Passes ``enable_search: True`` — a DashScope extension to the OpenAI-
-    compatible endpoint that activates Qwen's real-time web search capability.
-    Qwen autonomously decides whether to invoke the search tool based on
-    whether the user's query requires up-to-date information.
+    Implements the full tool-calling loop:
+      1. Send message to Qwen with the ``web_search`` function tool definition.
+      2. If Qwen's finish_reason == "tool_calls", execute each search with
+         DuckDuckGo (no API key), format the results, and send them back.
+      3. Call Qwen a second time with the search results appended so it can
+         produce a factually grounded answer.
+      4. Return the final text and a flag indicating whether search ran.
 
-    This is Hipocampus's MCP integration: the model operates as an agent
-    that can call an external tool (web search) and incorporate the results
-    into its response — all within a single API call to DashScope.
-
-    Detection heuristic:
-        DashScope embeds ``search_info`` in the response body when a search
-        was performed. We also scan for URL patterns in the reply text as a
-        fallback (Qwen cites sources inline when referencing web results).
+    The tool fires automatically when Qwen determines it needs current data
+    (recent events, live stats, URLs the user shared, etc.). For purely
+    historical or conceptual questions Qwen answers without calling the tool.
 
     Parameters:
         system_prompt (str)        — same as generate().
         messages      (list[dict]) — same as generate().
-        temperature   (float)      — sampling temperature, default 0.1.
-        max_tokens    (int)        — max reply tokens, default 2048.
+        temperature   (float)      — default 0.1.
+        max_tokens    (int)        — default 2048.
 
     Returns:
-        tuple[str, bool]
-          [0] — assistant reply text (may contain inline citations/URLs).
-          [1] — True if Qwen's web search tool was invoked for this turn.
+        tuple[str, bool] — (response_text, web_searched).
 
     Raises:
-        QwenAPIError — on any API or network failure.
+        QwenAPIError — on API or network failure.
 
     Used by: app/services/chat_service.py → process_turn()
     """
-    import re as _re
+    base_messages = [{"role": "system", "content": system_prompt}, *messages]
 
-    payload = {
+    # ── Step 1: first call with tool attached ─────────────────────────────
+    payload: dict = {
         "model": "qwen-max",
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            *messages,
-        ],
-        # DashScope extension: enable real-time web search MCP tool.
-        # Qwen decides autonomously whether the query needs a search.
-        "enable_search": True,
+        "messages": base_messages,
+        "tools": [_WEB_SEARCH_TOOL],
+        "tool_choice": "auto",   # Qwen decides whether to call the tool
     }
 
-    # Allow extra time — web search adds a retrieval round-trip.
-    body = await _post(payload, timeout=90.0)
-    text = _extract_text(body)
+    body = await _post(payload, timeout=60.0)
+    choice = body["choices"][0]
 
-    # ── Detect whether a web search was actually performed ─────────────────
-    # DashScope embeds ``search_info`` (list of result objects) at the top
-    # level of the response body when Qwen invoked the search tool.
-    # Fallback: detect inline URLs that Qwen cites when referencing results.
-    web_searched = False
+    # ── Step 2: handle tool call if Qwen decided to search ────────────────
+    if choice.get("finish_reason") == "tool_calls":
+        assistant_msg = choice["message"]
+        tool_calls = assistant_msg.get("tool_calls", [])
 
-    raw_search_info = body.get("search_info")
-    if raw_search_info:
-        # Non-empty list or dict means a search ran.
-        if isinstance(raw_search_info, list) and raw_search_info:
-            web_searched = True
-        elif isinstance(raw_search_info, dict) and raw_search_info:
-            web_searched = True
+        # Build the message thread for the second call.
+        thread = [*base_messages, assistant_msg]
 
-    if not web_searched:
-        # Heuristic: Qwen cites sources as hyperlinks when it uses web results.
-        if _re.search(r"https?://\S{8,}", text):
-            web_searched = True
+        for tc in tool_calls:
+            fn   = tc.get("function", {})
+            name = fn.get("name", "")
+            if name != "web_search":
+                continue
 
-    logger.debug(
-        "generate_with_search completed: web_searched=%s reply_len=%d",
-        web_searched, len(text),
-    )
-    return text, web_searched
+            try:
+                args  = json.loads(fn.get("arguments", "{}"))
+                query = args.get("query", "")
+            except json.JSONDecodeError:
+                query = ""
 
+            results = await _run_search(query) if query else []
 
+            thread.append({
+                "role":         "tool",
+                "tool_call_id": tc["id"],
+                "content":      json.dumps(results, ensure_ascii=False),
+            })
+
+        # ── Step 3: second call with search results ────────────────────────
+        payload2: dict = {
+            "model":       "qwen-max",
+            "temperature": temperature,
+            "max_tokens":  max_tokens,
+            "messages":    thread,
+        }
+        body2 = await _post(payload2, timeout=60.0)
+        return _extract_text(body2), True
+
+    # Qwen answered without searching.
+    return _extract_text(body), False
 
 async def expand_query(user_message: str) -> list[str]:
     """

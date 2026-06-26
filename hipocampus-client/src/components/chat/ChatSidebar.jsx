@@ -90,9 +90,11 @@ export default function ChatSidebar({
     loadChats();
   }, [loadChats]);
 
-  // Reload when the active chat changes (title may have been generated).
   useEffect(() => {
-    if (activeChatId) loadChats();
+    if (!activeChatId) return;
+    loadChats();
+    const id = setTimeout(loadChats, 5000);
+    return () => clearTimeout(id);
   }, [activeChatId, loadChats]);
 
   // ── New chat ──────────────────────────────────────────────────────────

@@ -180,7 +180,11 @@ export default function ChatInput({ onSend, loading }) {
           aria-label="Attach document (PDF, CSV, or Markdown)"
           title="Attach document (.pdf, .csv, .md · max 10 MB)"
         >
-          📎
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            aria-hidden="true">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
         </button>
 
         {/* Textarea */}
@@ -219,7 +223,14 @@ export default function ChatInput({ onSend, loading }) {
         <span style={s.hint}>
           Enter to send · Shift+Enter for newline
           {" · "}
-          <span style={s.hintAccent}>📎 .pdf .csv .md</span>
+          <span style={s.hintAccent}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+              style={{ verticalAlign: "middle", marginRight: "2px" }} aria-hidden="true">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+            .pdf .csv .md
+          </span>
         </span>
         {nearLimit && (
           <span style={{ ...s.charCount,
@@ -271,7 +282,23 @@ function AttachmentChip({ attachment, onClear }) {
         <span style={s.chipSpinner} aria-hidden="true" />
       ) : status === "ready" ? (
         <span aria-hidden="true">
-          {format === "pdf" ? "📄" : format === "csv" ? "📊" : "📝"}
+          {format === "pdf" ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/>
+              </svg>
+            ) : format === "csv" ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/>
+                <line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/>
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+            )}
         </span>
       ) : (
         <span aria-hidden="true">⚠</span>
@@ -356,7 +383,7 @@ const s = {
     height: "44px",
     borderRadius: "var(--radius-md)",
     background: "var(--color-accent)",
-    color: "#000000",
+    color: "var(--color-on-accent)",
     border: "none",
     cursor: "pointer",
     display: "flex",

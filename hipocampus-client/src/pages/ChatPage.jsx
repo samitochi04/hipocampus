@@ -127,7 +127,15 @@ export default function ChatPage() {
               style={showGenPanel ? { ...styles.toolbarBtn, ...styles.toolbarBtnActive } : styles.toolbarBtn}
               title="Generate a document (MD / PDF / CSV)"
             >
-              📄 Document
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                style={{ flexShrink: 0 }} aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+              Document
             </button>
           </div>
 
@@ -322,7 +330,7 @@ const bannerStyles = {
     background: "var(--color-accent)",
     border: "none",
     borderRadius: "var(--radius-sm)",
-    color: "#0D0F1A",
+    color: "var(--color-on-accent)",
     fontSize: "var(--fs-sm)",
     fontWeight: "var(--fw-bold)",
     cursor: "pointer",

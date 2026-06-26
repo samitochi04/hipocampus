@@ -72,7 +72,17 @@ export default function GeneratePanel({ onClose }) {
     <div style={s.panel}>
       {/* Header */}
       <div style={s.header}>
-        <span style={s.headerTitle}>📄 Generate Document</span>
+        <span style={s.headerTitle}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            style={{ marginRight: "6px", verticalAlign: "middle" }} aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          Generate Document
+        </span>
         <button onClick={onClose} style={s.closeBtn} aria-label="Close panel">×</button>
       </div>
 
@@ -235,7 +245,7 @@ const s = {
   formatBtnActive: {
     background: "var(--color-accent)",
     borderColor: "var(--color-accent)",
-    color: "#000000",
+    color: "var(--color-on-accent)",
   },
 
   sizeGroup: { display: "flex", gap: "var(--sp-2)", marginLeft: "auto" },
@@ -313,7 +323,7 @@ const s = {
     background: "var(--color-accent)",
     border: "none",
     borderRadius: "var(--radius-sm)",
-    color: "#000000",
+    color: "var(--color-on-accent)",
     fontSize: "var(--fs-sm)",
     fontWeight: "var(--fw-bold)",
     cursor: "pointer",

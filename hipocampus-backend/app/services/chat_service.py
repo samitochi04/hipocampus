@@ -47,21 +47,39 @@ logger = logging.getLogger(__name__)
 # System prompt template
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT_TEMPLATE = """You are Hipocampus, a highly capable technical assistant \
-with persistent memory. You remember the user's preferences, past decisions, and \
-recurring patterns across sessions.
+def _build_system_prompt_template() -> str:
+    """
+    Builds the system prompt with today's date injected at construction time.
+    The date is critical: Qwen's training cutoff predates events happening
+    in 2025-2026, so without it the model assumes recent events are "future"
+    and skips the web search tool entirely.
+    """
+    from datetime import UTC, datetime
+    today = datetime.now(UTC).strftime("%B %d, %Y")   # e.g. "June 26, 2026"
+    return f"""You are Hipocampus, a highly capable AI assistant with persistent memory \
+and real-time web search capability. Today's date is {today}.
 
-{memory_context}
+{{memory_context}}
 
-Instructions:
-- Always follow stored preferences exactly. Never contradict them unless the user \
-explicitly asks you to override.
-- When writing code, match the exact libraries, versions, and patterns the user \
-has used before.
+CRITICAL — Web search rules (follow these before every response):
+- You have a web_search tool. Use it proactively, especially for:
+  * ANY sports result, score, or statistic (football, basketball, F1, etc.)
+  * Current prices, market data, exchange rates
+  * News or events from 2025 or 2026
+  * Anything the user says happened "recently" or provides a URL for
+- NEVER say an event "has not yet occurred" or "is in the future" without
+  searching first. Your training data has a cutoff — events you don't know
+  about may have already happened by {today}.
+- If a search returns a rate-limit error, wait and try a different query.
+  Do NOT fall back to "I don't have access to real-time data."
+
+Memory instructions:
+- Always follow stored preferences exactly.
+- When writing code, match the exact libraries and patterns the user has used.
 - Be direct and technically precise. Avoid padding or filler sentences.
-- If you are uncertain about a stored preference, state the uncertainty clearly \
-rather than guessing.
 """
+
+SYSTEM_PROMPT_TEMPLATE = _build_system_prompt_template()
 
 # Importance thresholds — must stay in sync with importance.py comments.
 IMPORTANCE_THRESHOLD_SAVE = 0.45
@@ -261,22 +279,16 @@ async def _generate_title(chat_id: uuid.UUID, user_message: str) -> None:
 
 def _assemble_prompt(memory_context: str) -> str:
     """
-    Injects the retrieved memory context block into the system prompt template.
-
-    Parameters:
-        memory_context (str) — the [MEMORY_CONTEXT]...[/MEMORY_CONTEXT] block
-                               from tier_retrieval, or an empty string.
-
-    Returns:
-        str — the fully assembled system prompt.
-
-    Used by: process_turn()
+    Injects the retrieved memory context block into the system prompt.
+    Re-evaluates the template each call so the embedded date is always today.
     """
+    # Rebuild with today's date on every turn (cheap string op).
+    template = _build_system_prompt_template()
     context_section = (
         memory_context.strip()
         or "(No prior memory found for this user. Treat this as a fresh session.)"
     )
-    return SYSTEM_PROMPT_TEMPLATE.format(memory_context=context_section)
+    return template.format(memory_context=context_section)
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,10 @@
   --color-accent:             #FFFFFF;
   --color-accent-hover:       #DDDDDD;
   --color-accent-subtle:      rgba(255, 255, 255, 0.06);
+  /* Text colour for elements that sit ON an accent-coloured background.
+     Must always contrast with --color-accent. Dark mode: accent=white → text=black.
+     Light mode override below flips this. */
+  --color-on-accent:          #000000;
 
   /* Chat bubbles */
   --color-bubble-user:        #FFFFFF;  /* white ground for user messages  */
@@ -378,3 +382,49 @@ a:hover {
     padding: var(--sp-6);
   }
 }
+
+/* ── 9b. Light theme ────────────────────────────────────────────────────── */
+/*
+  Applied when <html data-theme="light"> is set by the theme toggle in Header.
+  The palette inverts: white ground, black accent, black user bubbles.
+  Semantic colours (error/warning/success) are unchanged — they're signals, not style.
+*/
+:root[data-theme="light"] {
+  --color-bg-base:            #FFFFFF;
+  --color-bg-surface:         #F5F5F5;
+  --color-bg-input:           #EBEBEB;
+  --color-border:             #DCDCDC;
+  --color-border-hover:       #C0C0C0;
+  --color-text-primary:       #000000;
+  --color-text-secondary:     #555555;
+  --color-text-placeholder:   #AAAAAA;
+
+  /* Black accent — inverts naturally from the dark-theme white accent */
+  --color-accent:             #000000;
+  --color-accent-hover:       #222222;
+  --color-accent-subtle:      rgba(0, 0, 0, 0.06);
+  /* Light mode: accent=black → text on accent must be white */
+  --color-on-accent:          #FFFFFF;
+
+  /* User bubble is dark in light mode (mirrors dark mode where it's white) */
+  --color-bubble-user:        #000000;
+  --color-bubble-user-text:   #FFFFFF;
+  /* AI bubble is light gray */
+  --color-bubble-ai:          #EDEDED;
+
+  /* Shadows are lighter in light mode */
+  --shadow-card:        0 4px 24px rgba(0, 0, 0, 0.10);
+  --shadow-popover:     0 8px 40px rgba(0, 0, 0, 0.15);
+  --shadow-accent-glow: 0 0 12px rgba(0, 0, 0, 0.08);
+}
+
+/* Markdown code inline — lighter tint in light mode */
+:root[data-theme="light"] .md-body code:not(pre > code) {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+/* Scrollbar tints for light mode */
+:root[data-theme="light"] ::-webkit-scrollbar-track { background: #F5F5F5; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #D0D0D0; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #B8B8B8; }

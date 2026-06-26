@@ -105,7 +105,14 @@ function WebSearchBadge() {
   return (
     <div style={styles.searchBadgeWrapper} aria-label="Web search was used">
       <span style={styles.searchBadge}>
-        🔍 Searched the web · Powered by Qwen MCP
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+        Searched the web · Powered by Qwen MCP
       </span>
     </div>
   );
