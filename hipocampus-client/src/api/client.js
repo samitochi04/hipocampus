@@ -76,12 +76,9 @@ export function clearAuthToken() {
  * Returns: string | null.
  * Used by: apiRequest() below.
  */
-function getAuthToken() {
+export function getAuthToken() {
   if (!_token) {
-    try { _token = sessionStorage.getItem(SESSION_KEY); } 
-    catch { 
-      console.log("Not token found");
-     }
+    try { _token = sessionStorage.getItem(SESSION_KEY); } catch { /* storage blocked */ }
   }
   return _token;
 }

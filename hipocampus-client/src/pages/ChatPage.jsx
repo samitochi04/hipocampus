@@ -27,6 +27,7 @@ import Header from "../components/layout/Header.jsx";
 import ChatWindow from "../components/chat/ChatWindow.jsx";
 import ChatInput from "../components/chat/ChatInput.jsx";
 import ChatSidebar from "../components/chat/ChatSidebar.jsx";
+import GeneratePanel from "../components/chat/GeneratePanel.jsx";
 import { useChat } from "../hooks/useChat.js";
 
 export default function ChatPage() {
@@ -34,8 +35,9 @@ export default function ChatPage() {
   const navigate    = useNavigate();
 
   // Mobile detection — sidebar is a drawer overlay below 768 px.
-  const [isMobile,  setIsMobile]  = useState(() => window.innerWidth < 768);
-  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768);
+  const [isMobile,     setIsMobile]     = useState(() => window.innerWidth < 768);
+  const [collapsed,    setCollapsed]    = useState(() => window.innerWidth < 768);
+  const [showGenPanel, setShowGenPanel] = useState(false);
 
   useEffect(() => {
     function onResize() {
@@ -116,6 +118,22 @@ export default function ChatPage() {
 
         {/* Chat column */}
         <div style={styles.chatColumn}>
+
+          {/* Toolbar — sits above the message list */}
+          <div style={styles.toolbar}>
+            <button
+              onClick={() => setShowGenPanel((v) => !v)}
+              style={showGenPanel ? { ...styles.toolbarBtn, ...styles.toolbarBtnActive } : styles.toolbarBtn}
+              title="Generate a document (MD / PDF / CSV)"
+            >
+              📄 Document
+            </button>
+          </div>
+
+          {/* Generate panel — slides in below toolbar */}
+          {showGenPanel && (
+            <GeneratePanel onClose={() => setShowGenPanel(false)} />
+          )}
 
           {/* Scrollable message list */}
           <ChatWindow
@@ -214,6 +232,33 @@ const styles = {
     marginTop: "var(--header-height)",
     height: "calc(100dvh - var(--header-height))",
     overflow: "hidden",
+  },
+
+  toolbar: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--sp-2)",
+    padding: "var(--sp-2) var(--sp-4)",
+    borderBottom: "1px solid var(--color-border)",
+    background: "var(--color-bg-base)",
+    flexShrink: 0,
+  },
+  toolbarBtn: {
+    padding: "var(--sp-1) var(--sp-3)",
+    background: "transparent",
+    border: "1px solid var(--color-border)",
+    borderRadius: "var(--radius-lg)",
+    color: "var(--color-text-secondary)",
+    fontSize: "var(--fs-xs)",
+    fontWeight: "var(--fw-medium)",
+    cursor: "pointer",
+    fontFamily: "var(--font-body)",
+    transition: "all var(--transition-fast)",
+  },
+  toolbarBtnActive: {
+    background: "var(--color-accent-subtle)",
+    borderColor: "var(--color-accent)",
+    color: "var(--color-accent)",
   },
 
   chatColumn: {
