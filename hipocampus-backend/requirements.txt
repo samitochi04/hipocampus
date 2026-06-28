@@ -37,6 +37,12 @@ python-multipart==0.0.32
 PyMuPDF==1.24.10                 # PDF text extraction — imports as `import fitz`
 
 # --- Web search (MCP tool execution) ---
+# duckduckgo_search removed — _run_search now uses httpx directly
+# (html.duckduckgo.com endpoint) to avoid the primp rate-limit issue.
+
+# --- Voice TTS ---
+dashscope>=1.21.0                # Official DashScope SDK — used for qwen3-tts-flash
+                                 # TTS via the WebSocket SpeechSynthesizer API.
 pytest==8.3.3
 pytest-asyncio==0.24.0
 pytest-cov==5.0.0

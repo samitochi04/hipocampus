@@ -181,6 +181,16 @@ export function useChat({ chatId = null, onChatCreated } = {}) {
   const dismissConflict = useCallback(() => setConflict(null), []);
   const dismissError    = useCallback(() => setError(null), []);
 
+  // Inject a completed voice turn directly into the message list without
+  // triggering a send() call — the backend already processed it via /voice/chat.
+  const addVoiceTurn = useCallback((transcription, response) => {
+    setMessages(prev => [
+      ...prev,
+      { role: "user",      content: `🎤 ${transcription}` },
+      { role: "assistant", content: response },
+    ]);
+  }, []);
+
   return {
     messages,
     historyLoading,
@@ -190,6 +200,7 @@ export function useChat({ chatId = null, onChatCreated } = {}) {
     sessionId,
     webSearched,
     send,
+    addVoiceTurn,
     dismissConflict,
     dismissError,
   };

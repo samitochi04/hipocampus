@@ -28,6 +28,7 @@ import ChatWindow from "../components/chat/ChatWindow.jsx";
 import ChatInput from "../components/chat/ChatInput.jsx";
 import ChatSidebar from "../components/chat/ChatSidebar.jsx";
 import GeneratePanel from "../components/chat/GeneratePanel.jsx";
+import VoiceMode    from "../components/chat/VoiceMode.jsx";
 import { useChat } from "../hooks/useChat.js";
 
 export default function ChatPage() {
@@ -38,6 +39,7 @@ export default function ChatPage() {
   const [isMobile,     setIsMobile]     = useState(() => window.innerWidth < 768);
   const [collapsed,    setCollapsed]    = useState(() => window.innerWidth < 768);
   const [showGenPanel, setShowGenPanel] = useState(false);
+  const [voiceMode,    setVoiceMode]    = useState(false);
 
   useEffect(() => {
     function onResize() {
@@ -68,7 +70,9 @@ export default function ChatPage() {
     webSearched,
     conflict,
     error,
+    sessionId,
     send,
+    addVoiceTurn,
     dismissConflict,
     dismissError,
   } = useChat({
@@ -137,6 +141,25 @@ export default function ChatPage() {
               </svg>
               Document
             </button>
+
+            {/* Voice mode toggle */}
+            <button
+              onClick={() => setVoiceMode(v => !v)}
+              style={voiceMode
+                ? { ...styles.toolbarBtn, ...styles.toolbarBtnActive }
+                : styles.toolbarBtn}
+              title="Voice mode — speak with Hipocampus"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                style={{ marginRight: "5px", verticalAlign: "middle" }} aria-hidden="true">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8"  y1="23" x2="16" y2="23"/>
+              </svg>
+              Voice
+            </button>
           </div>
 
           {/* Generate panel — slides in below toolbar */}
@@ -168,8 +191,22 @@ export default function ChatPage() {
             <ErrorBanner message={error} onDismiss={dismissError} />
           )}
 
-          {/* Message input */}
-          <ChatInput onSend={send} loading={loading} />
+          {/* Message input / Voice mode */}
+          {voiceMode ? (
+            <VoiceMode
+              sessionId={sessionId}
+              onTurn={({ transcription, response, chatId: newChatId }) => {
+                // Inject messages directly — no page reload, no navigate.
+                addVoiceTurn(transcription, response);
+                // If brand-new chat, update URL so sidebar reflects it.
+                if (newChatId && !chatId) {
+                  navigate(`/chat/${newChatId}`, { replace: true });
+                }
+              }}
+            />
+          ) : (
+            <ChatInput onSend={send} loading={loading} />
+          )}
         </div>
       </div>
     </div>
@@ -256,7 +293,9 @@ const styles = {
   toolbarBtn: {
     padding: "var(--sp-1) var(--sp-3)",
     background: "transparent",
-    border: "1px solid var(--color-border)",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: "var(--color-border)",
     borderRadius: "var(--radius-lg)",
     color: "var(--color-text-secondary)",
     fontSize: "var(--fs-xs)",
