@@ -234,7 +234,19 @@ async def _synthesise(text: str) -> bytes:
         if not audio_chunks:
             raise ValueError("No audio chunks from qwen-omni-turbo stream")
 
-        raw = base64.b64decode("".join(audio_chunks))
+        # Decode each chunk independently to avoid base64 padding corruption.
+        # Concatenating base64 strings directly ("AAAB==" + "CCCC") places
+        # padding characters mid-string, which makes the whole string invalid.
+        # Decoding each chunk to bytes first, then joining, is always correct.
+        raw_bytes = bytearray()
+        for chunk in audio_chunks:
+            s   = chunk.rstrip("=")           # strip existing padding
+            pad = (4 - len(s) % 4) % 4        # add correct padding
+            try:
+                raw_bytes.extend(base64.b64decode(s + "=" * pad))
+            except Exception as exc:
+                logger.debug("TTS chunk decode skip: %s", exc)
+        raw = bytes(raw_bytes)
         logger.info("TTS OK (omni-turbo stream/%d): %d bytes", len(audio_chunks), len(raw))
         return raw
 

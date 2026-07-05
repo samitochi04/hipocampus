@@ -274,7 +274,10 @@ export default function VoiceMode({ sessionId, onTurn }) {
       audioRef.current = aud;
       const done = () => { URL.revokeObjectURL(url); afterSpeech(); resolve(); };
       aud.onended = done;
-      aud.onerror = done;
+      aud.onerror = (e) => {
+        console.error("Audio playback error:", e, aud.error);
+        done();
+      };
       aud.play().catch(err => {
         // Autoplay blocked (HTTP page, expired user-gesture window).
         // Clean up and reject so the caller can fall back to browser TTS.
