@@ -43,6 +43,28 @@ from app.services.chat_service import process_turn
 
 logger = logging.getLogger(__name__)
 
+
+def _pcm_to_wav(pcm: bytes, sample_rate: int = 24000,
+                channels: int = 1, bits: int = 16) -> bytes:
+    """Wraps raw PCM16 bytes in a RIFF/WAV header so browsers can play them.
+
+    qwen-omni-turbo streaming audio is always PCM16 regardless of the
+    format parameter. Returning it as-is in an "audio/mp3" blob causes
+    MEDIA_ERR_DECODE. A WAV container is trivially small (44-byte header)
+    and every browser decodes it natively.
+    """
+    import struct
+    byte_rate   = sample_rate * channels * bits // 8
+    block_align = channels * bits // 8
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + len(pcm), b"WAVE",
+        b"fmt ", 16, 1, channels,
+        sample_rate, byte_rate, block_align, bits,
+        b"data", len(pcm),
+    )
+    return header + pcm
+
 router = APIRouter(prefix="/voice", tags=["voice"])
 
 # ---------------------------------------------------------------------------
@@ -246,9 +268,13 @@ async def _synthesise(text: str) -> bytes:
                 raw_bytes.extend(base64.b64decode(s + "=" * pad))
             except Exception as exc:
                 logger.debug("TTS chunk decode skip: %s", exc)
-        raw = bytes(raw_bytes)
-        logger.info("TTS OK (omni-turbo stream/%d): %d bytes", len(audio_chunks), len(raw))
-        return raw
+        pcm = bytes(raw_bytes)
+        # Wrap raw PCM16 in a WAV container — browsers need the RIFF header
+        # to know the sample rate and channel count; bare PCM isn't playable.
+        wav = _pcm_to_wav(pcm, sample_rate=24000, channels=1, bits=16)
+        logger.info("TTS OK (omni-turbo stream/%d): %d PCM → %d WAV bytes",
+                    len(audio_chunks), len(pcm), len(wav))
+        return wav
 
     except httpx.RequestError as exc:
         logger.error("TTS network error: %s", exc)
