@@ -126,11 +126,28 @@ function EmptyState() {
   return (
     <div style={styles.emptyState}>
       <span style={styles.emptyDot} aria-hidden="true" />
-      <p style={styles.emptyHeading}>Ready when you are.</p>
+      <p style={styles.emptyHeading}>Start talking. I'll remember everything.</p>
       <p style={styles.emptyBody}>
-        Ask anything. Hipocampus remembers your preferences, past decisions,
-        and patterns across every session.
+        Type your first message below - Hipocampus builds memory across every
+        session so you never repeat yourself.
       </p>
+      <div style={{ display:"flex", flexDirection:"column", gap:"var(--sp-2)",
+        marginTop:"var(--sp-3)", width:"100%", maxWidth:"360px" }}>
+        {[
+          '"I\'m building a SaaS product in Go"',
+          '"I prefer TypeScript over JavaScript"',
+          '"Summarise my Q3 sales report"',
+        ].map((ex) => (
+          <div key={ex} style={{
+            padding:"var(--sp-2) var(--sp-3)",
+            background:"var(--color-bg-input)",
+            borderWidth:"1px", borderStyle:"solid", borderColor:"var(--color-border)",
+            borderRadius:"var(--radius-sm)",
+            fontSize:"var(--fs-xs)", color:"var(--color-text-secondary)",
+            fontStyle:"italic",
+          }}>{ex}</div>
+        ))}
+      </div>
     </div>
   );
 }

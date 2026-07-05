@@ -159,15 +159,24 @@ export default function VoiceMode({ sessionId, onTurn }) {
   // ── Handle pointer events for manual mode ─────────────────────────────────
 
   function handlePointerDown(e) {
-    e.preventDefault();
     if (mode === "auto") return;
+    // IMPORTANT: only call preventDefault() when we are actually going to start
+    // recording. If we call it unconditionally, the browser suppresses the
+    // subsequent click event — which means onClick={stopAudio} never fires
+    // when the user taps the button while the AI is speaking.
+    if (phase !== "idle" && phase !== "error") return;
+    e.preventDefault();
     if (attachment?.status === "processing") { setErrMsg("Wait for document to finish loading."); return; }
     startListening();
   }
 
   function handlePointerUp(e) {
     e.preventDefault();
-    if (mode === "auto") return;
+    if (modeRef.current === "auto") return;
+    // Use phaseRef.current (not phase) to avoid stale closure —
+    // phase captured at render time may not reflect the current speaking state.
+    if (phaseRef.current === "speaking") { stopAudio(); return; }
+    if (phaseRef.current !== "recording") return;
     stopManually();
   }
 
@@ -179,9 +188,7 @@ export default function VoiceMode({ sessionId, onTurn }) {
     } else if (phase === "recording") {
       stopManually();
     } else if (phase === "speaking") {
-      audioRef.current?.pause();
-      window.speechSynthesis?.cancel();
-      setPhase("idle");
+      stopAudio();  // handles both server audio and browser TTS
     }
   }
 
@@ -233,7 +240,12 @@ export default function VoiceMode({ sessionId, onTurn }) {
 
       // ── Speak the response ────────────────────────────────────────────
       if (result.audio_base64) {
-        await playServerAudio(result.audio_base64, result.audio_format);
+        try {
+          await playServerAudio(result.audio_base64, result.audio_format);
+        } catch {
+          // Autoplay blocked (HTTP page) — fall back to browser TTS
+          await playBrowserTTS(result.response);
+        }
       } else {
         await playBrowserTTS(result.response);
       }
@@ -254,20 +266,23 @@ export default function VoiceMode({ sessionId, onTurn }) {
   }
 
   async function playServerAudio(b64, fmt) {
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
       setPhase("speaking");
-      const mp3 = base64ToBlob(b64, `audio/${fmt}`);
-      const url = URL.createObjectURL(mp3);
-      const aud = new Audio(url);
+      const blob = base64ToBlob(b64, `audio/${fmt}`);
+      const url  = URL.createObjectURL(blob);
+      const aud  = new Audio(url);
       audioRef.current = aud;
-      const done = () => {
-        URL.revokeObjectURL(url);
-        afterSpeech();
-        resolve();
-      };
+      const done = () => { URL.revokeObjectURL(url); afterSpeech(); resolve(); };
       aud.onended = done;
       aud.onerror = done;
-      aud.play().catch(done);
+      aud.play().catch(err => {
+        // Autoplay blocked (HTTP page, expired user-gesture window).
+        // Clean up and reject so the caller can fall back to browser TTS.
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        setPhase("idle");
+        reject(err);
+      });
     });
   }
 
@@ -276,7 +291,8 @@ export default function VoiceMode({ sessionId, onTurn }) {
       if (!window.speechSynthesis) { afterSpeech(); resolve(); return; }
       setPhase("speaking");
       // Truncate for browser TTS
-      const utterance = new SpeechSynthesisUtterance(text.slice(0, 600));
+      // No char limit — let the full response be spoken
+    const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate  = 1.05;
       utterance.pitch = 1.0;
       const done = () => { afterSpeech(); resolve(); };
@@ -374,8 +390,8 @@ export default function VoiceMode({ sessionId, onTurn }) {
       <button
         onPointerDown={!isAuto ? handlePointerDown : undefined}
         onPointerUp={!isAuto ? handlePointerUp : undefined}
-        onPointerLeave={!isAuto && isRecording ? handlePointerUp : undefined}
-        onPointerCancel={!isAuto && isRecording ? handlePointerUp : undefined}
+        onPointerLeave={!isAuto && (isRecording || isSpeaking) ? handlePointerUp : undefined}
+        onPointerCancel={!isAuto && (isRecording || isSpeaking) ? handlePointerUp : undefined}
         onClick={isAuto ? handleMicClick : undefined}
         disabled={busy}
         style={{

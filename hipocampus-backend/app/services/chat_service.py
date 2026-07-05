@@ -125,16 +125,21 @@ async def _get_or_create_chat(
         )
         chat = result.scalars().first()
         if not chat:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Chat session not found. Create a new chat first.",
+            # Session not found (stale sessionStorage from a previous run).
+            # Silently create a new chat rather than erroring — this is
+            # the behaviour every major LLM product uses.
+            logger.warning(
+                "_get_or_create_chat: session %r not found for user %s — creating new",
+                session_id, user_id,
             )
-        # Check message count BEFORE this turn to detect the first turn.
-        count_result = await db.execute(
-            select(func.count(Message.id)).where(Message.chat_id == chat.id)
-        )
-        is_first_turn = (count_result.scalar() or 0) == 0
-        return chat, is_first_turn
+            session_id = None   # fall through to creation below
+        else:
+            # Check message count BEFORE this turn to detect the first turn.
+            count_result = await db.execute(
+                select(func.count(Message.id)).where(Message.chat_id == chat.id)
+            )
+            is_first_turn = (count_result.scalar() or 0) == 0
+            return chat, is_first_turn
 
     # No session_id supplied → create a new chat.
     raw = uuid.uuid4().hex

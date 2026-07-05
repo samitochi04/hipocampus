@@ -165,69 +165,82 @@ async def _transcribe(audio_bytes: bytes, mime_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _synthesise_blocking(text: str) -> bytes:
-    """
-    Blocking TTS call using the official DashScope Python SDK.
-    Runs in a thread pool via _synthesise() to avoid blocking the event loop.
-
-    Uses qwen3-tts-flash via the SDK's SpeechSynthesizer which handles the
-    WebSocket/streaming protocol internally — no need to manage SSE chunks or
-    base64 reassembly manually.
-
-    The SDK is pointed at the international DashScope endpoint so all
-    billing goes through the same account as the other API calls.
-
-    Parameters:
-        text (str) — AI response text (already capped at _TTS_MAX_CHARS).
-
-    Returns:
-        bytes — raw MP3 audio data.
-
-    Raises:
-        ValueError — if the SDK returns no audio (model error or rate limit).
-        ImportError — if dashscope is not installed (pip install dashscope).
-    """
-    import dashscope
-    from dashscope.audio.tts_v3 import SpeechSynthesizer
-
-    # Point the SDK at the international endpoint.
-    dashscope.base_http_api_url = "https://dashscope-intl.aliyuncs.com/api/v1"
-    dashscope.api_key = settings.QWEN_API_KEY
-
-    result = SpeechSynthesizer.call(
-        model="qwen3-tts-flash",
-        text=text,
-        sample_rate=22050,
-        format="mp3",
-    )
-
-    audio = result.get_audio_data()
-    if not audio:
-        resp = result.get_response()
-        raise ValueError(f"TTS SDK returned no audio. Response: {resp}")
-
-    logger.info("TTS OK (dashscope SDK): %d bytes", len(audio))
-    return audio
-
-
 async def _synthesise(text: str) -> bytes:
     """
-    Async wrapper around _synthesise_blocking().
-    Runs the blocking DashScope SDK call in a thread pool executor so the
-    FastAPI event loop is not blocked during the TTS WebSocket connection.
+    Text-to-speech using qwen-omni-turbo with audio output modality.
+
+    The /api/v1/services/aigc/text2audio/generation endpoint is CosyVoice's
+    voice-cloning REST API — it always returns "url error" for qwen3-tts-flash
+    because it expects a reference audio URL, not a preset voice name.
+    qwen3-tts-flash actually uses a WebSocket endpoint handled by the SDK.
+
+    qwen-omni-turbo supports audio output via the standard OpenAI-compatible
+    chat completions endpoint using modalities: ["audio"]. The audio field in
+    the response (choices[0].message.audio.data) contains base64 MP3 bytes.
+    This endpoint is confirmed working for this account.
 
     Parameters:
-        text (str) — AI response text (capped at _TTS_MAX_CHARS).
+        text (str) — AI response text, capped at _TTS_MAX_CHARS.
 
     Returns:
         bytes — raw MP3 audio.
 
     Raises:
-        ValueError / ImportError — propagated from _synthesise_blocking.
+        ValueError — if the API returns no audio data.
+        httpx.RequestError — on network failure.
     """
-    import asyncio
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _synthesise_blocking, text[:_TTS_MAX_CHARS])
+    # stream=True is required — with stream=False the model only returns text.
+    payload = {
+        "model":      "qwen-omni-turbo",
+        "modalities": ["text", "audio"],
+        "audio":      {"format": "mp3"},
+        "stream":     True,
+        "messages": [
+            {
+                "role":    "user",
+                "content": (
+                    "Please speak the following text naturally and clearly:\n\n"
+                    + text[:_TTS_MAX_CHARS]
+                ),
+            }
+        ],
+    }
+
+    audio_chunks: list[str] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            async with client.stream(
+                "POST", _CHAT_URL, json=payload, headers=_HEADERS
+            ) as resp:
+                async for raw_line in resp.aiter_lines():
+                    line = raw_line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk  = json.loads(data_str)
+                        delta  = chunk["choices"][0].get("delta", {})
+                        audio  = delta.get("audio") or {}
+                        # Audio chunks are in delta.audio.data (base64)
+                        piece  = audio.get("data", "") if isinstance(audio, dict) else ""
+                        if piece:
+                            audio_chunks.append(piece)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+
+        if not audio_chunks:
+            raise ValueError("No audio chunks from qwen-omni-turbo stream")
+
+        raw = base64.b64decode("".join(audio_chunks))
+        logger.info("TTS OK (omni-turbo stream/%d): %d bytes", len(audio_chunks), len(raw))
+        return raw
+
+    except httpx.RequestError as exc:
+        logger.error("TTS network error: %s", exc)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +305,9 @@ async def voice_chat(
     # VAD auto-mode can pick up ambient noise (keyboard, fan, etc.) that the
     # STT model transcribes as 1-3 Chinese characters. Reject anything < 5 chars
     # to prevent spurious API calls and Chinese-language AI responses.
-    if len(transcription.strip()) < 5:
+    if len(transcription.strip()) < 8:
         logger.warning(
-            "Transcription too short (%d chars) — likely noise, skipped: %r",
+            "Transcription too short (%d chars, min 8) — likely noise, skipped: %r",
             len(transcription.strip()), transcription,
         )
         raise HTTPException(

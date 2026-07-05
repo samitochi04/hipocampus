@@ -346,6 +346,7 @@ const s = {
     background: "transparent",
     border: "1px solid var(--color-border)",
     borderRadius: "var(--radius-md)",
+    color: "var(--color-text-secondary)",
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
