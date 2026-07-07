@@ -14,7 +14,7 @@ Two top-level entry points:
 Pipeline inside consolidate_user_memory():
   A. Fetch pending episodes      — unpromoted, importance >= 0.45, newest 64
   B. Recalculate importance      — re-score with updated recency/frequency data
-  C. Chunk and send to Qwen-Long — 32 episodes per chunk, returns structured JSON
+  C. Chunk and send to Qwen-Max — 32 episodes per chunk, returns structured JSON
   D. Resolve contradictions      — compare new facts against stored ones via
                                    cosine similarity + LLM arbitration
   E. Write back                  — insert new semantic facts and procedural patterns
@@ -53,7 +53,7 @@ MIN_IMPORTANCE_FOR_CONSOLIDATION = 0.45
 # Maximum episodes fetched per consolidation run per user.
 MAX_EPISODES_PER_RUN = 64
 
-# Episodes are sent to Qwen-Long in chunks to stay within its context window.
+# Episodes are sent to Qwen-Max in chunks to stay within its context window.
 CHUNK_SIZE = 32
 
 # Cosine distance threshold below which two semantic facts are considered
@@ -418,7 +418,7 @@ async def consolidate_user_memory(user_id: str) -> dict:
     at 3 AM daily. Opens its own DB session so it is independent of the
     FastAPI request lifecycle.
 
-    Phases: A (fetch) → B (re-score) → C (chunk + Qwen-Long) →
+    Phases: A (fetch) → B (re-score) → C (chunk + Qwen-Max) →
             D (contradiction resolution) → E (write-back) → F (promote)
 
     Parameters:
@@ -466,7 +466,7 @@ async def consolidate_user_memory(user_id: str) -> dict:
                 ep.importance_score = _recalculate_importance(ep, total)
 
             # ── Phase C ────────────────────────────────────────────────────
-            # Serialise episodes to plain dicts for the Qwen-Long prompt.
+            # Serialise episodes to plain dicts for the Qwen-Max prompt.
             episode_dicts = [
                 {
                     "id": str(ep.id),

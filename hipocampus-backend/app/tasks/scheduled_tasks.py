@@ -79,7 +79,7 @@ def consolidate_all_users(self) -> dict:
 
     For each user:
       - Fetches unpromoted episodes above the importance threshold.
-      - Sends them to Qwen-Long in 32-episode chunks.
+      - Sends them to Qwen-Max in 32-episode chunks.
       - Resolves contradictions against stored semantic facts.
       - Writes new semantic facts and procedural patterns.
       - Marks processed episodes as promoted.

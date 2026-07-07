@@ -749,7 +749,7 @@ Special thanks to the teams behind pgvector, FastAPI, and the neuroscientific re
 
 <div align="center">
 
-**Hipocampus** — Because your AI should remember you.
+**Hipocampus** - Because your AI should remember you.
 
 *Submitted to Qwen Cloud Hackathon 2026 · Track 1: MemoryAgent*
 
