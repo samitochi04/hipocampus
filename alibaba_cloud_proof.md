@@ -6,6 +6,20 @@
 
 ---
 
+#### Deployment Images
+
+<img width="1918" height="862" alt="SWAS-Server" src="https://github.com/user-attachments/assets/23482b99-5e0a-48df-aefb-dbfe682d6dd9" />
+
+---
+
+<img width="1918" height="867" alt="SWAS-Server-Instance" src="https://github.com/user-attachments/assets/d1f81c39-28a9-4cc4-ba7c-b71376f8fc45" />
+
+---
+
+<img width="1918" height="868" alt="SWAS-Server-Usage" src="https://github.com/user-attachments/assets/4b3d4435-fca0-4961-ae7b-f6daa30cab07" />
+
+---
+
 ## 1. Alibaba Cloud Services Used
 
 ### 1.1 Simple Application Server (SWAS)
