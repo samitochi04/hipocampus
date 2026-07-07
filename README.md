@@ -15,7 +15,7 @@
 [![Qwen Cloud](https://img.shields.io/badge/Qwen-Cloud-orange.svg)](https://dashscope.aliyun.com)
 [![MCP Tool Calling](https://img.shields.io/badge/MCP-Tool_Calling-red.svg)](hipocampus-backend/app/services/memory_engine/qwen_router.py)
 
-**[Live Demo](https://disk-studying-imagination-concern.trycloudflare.com) · [Architecture](#-system-architecture) · [MCP Integrations](#-mcp-integrations) · [Mathematics](#-mathematical-foundations) · [Qwen APIs](#-qwen-cloud-api-usage)**
+**[Live Demo](https://disk-studying-imagination-concern.trycloudflare.com) · [Live Dashboard](https://disk-studying-imagination-concern.trycloudflare.com/analyse) · [Architecture](#-system-architecture) · [MCP Integrations](#-mcp-integrations) · [Mathematics](#-mathematical-foundations) · [Qwen APIs](#-qwen-cloud-api-usage)**
 
 </div>
 
